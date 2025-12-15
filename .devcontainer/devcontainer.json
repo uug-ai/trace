@@ -3,7 +3,7 @@
 {
 	"name": "go:1.24-bookworm",
 	"runArgs": [
-		"--name=tracer",
+		"--name=trace",
 		"--network=host"
 	],
 	"dockerFile": "Dockerfile",

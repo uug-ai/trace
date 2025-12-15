@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	_ "github.com/uug-ai/tracer/pkg/opentelemetry"
+	_ "github.com/uug-ai/trace/pkg/opentelemetry"
 )
 
 func main() {

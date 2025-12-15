@@ -1,4 +1,4 @@
-module github.com/uug-ai/tracer
+module github.com/uug-ai/trace
 
 go 1.24.10
 
