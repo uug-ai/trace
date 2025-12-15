@@ -2,12 +2,12 @@ package opentelemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
 	"strings"
 
-	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
@@ -28,21 +28,20 @@ func NewTracer(serviceName string) (*Tracer, error) {
 	return &Tracer{ServiceName: serviceName}, nil
 }
 
-func (th *Tracer) Initialize(logger *logrus.Logger) error {
-	tracer := otel.Tracer(th.ReturnFilePath(2))
+func (th *Tracer) Initialize() error {
+	filePath, err := th.ReturnFilePath(2)
+	if err != nil {
+		return fmt.Errorf("failed to get file path: %w", err)
+	}
+	tracer := otel.Tracer(filePath)
 	th.tracer = tracer
-	logger.Debug("Initialized OpenTelemetry Tracer for service: ", th.ServiceName)
 	return nil
 }
 
-func (th *Tracer) Connect(logger *logrus.Logger) error {
-
-	logger.Debug("Connecting to OpenTelemetry Tracer Provider")
-
+func (th *Tracer) Connect() error {
 	// Get the OTEL endpoint from environment variable
 	otelEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if otelEndpoint == "" {
-		logger.Warn("OTEL_EXPORTER_OTLP_ENDPOINT is not set, skipping OpenTelemetry setup")
 		return fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT is not set")
 	}
 
@@ -66,7 +65,6 @@ func (th *Tracer) Connect(logger *logrus.Logger) error {
 		otlptracehttp.NewClient(clientOpts...),
 	)
 	if err != nil {
-		logger.Error("Error creating OTLP trace exporter: ", err)
 		return fmt.Errorf("creating new exporter: %w", err)
 	}
 
@@ -85,29 +83,28 @@ func (th *Tracer) Connect(logger *logrus.Logger) error {
 	// Set the global tracer provider
 	otel.SetTracerProvider(traceProvider)
 	th.traceProvider = traceProvider
-	logger.Debug("Connected to OpenTelemetry Tracer Provider at ", otelEndpoint)
 
 	return nil
 }
 
 // ContinueWithTrace continues a trace from the given trace ID in the context.
 // This is useful for propagating traces across service boundaries.
-func (th *Tracer) ContinueWithTrace(logger *logrus.Logger, ctx context.Context, traceID string) context.Context {
+// Returns an error if the trace ID is invalid.
+func (th *Tracer) ContinueWithTrace(ctx context.Context, traceID string) (context.Context, error) {
 	tid, err := otelTrace.TraceIDFromHex(traceID)
 	if err != nil {
-		logger.Error("Invalid trace ID: ", err)
-		return ctx
+		return ctx, fmt.Errorf("invalid trace ID: %w", err)
 	}
 	spanContext := otelTrace.NewSpanContext(otelTrace.SpanContextConfig{
 		TraceID: tid,
 		SpanID:  otelTrace.SpanID{},
 		Remote:  true,
 	})
-	return otelTrace.ContextWithRemoteSpanContext(ctx, spanContext)
+	return otelTrace.ContextWithRemoteSpanContext(ctx, spanContext), nil
 }
 
 // CreateSpan creates a new span with the given parameters and returns the updated context and span.
-func (th *Tracer) CreateSpan(logger *logrus.Logger, ctx context.Context, parameters map[string]string) (context.Context, otelTrace.Span) {
+func (th *Tracer) CreateSpan(ctx context.Context, parameters map[string]string) (context.Context, otelTrace.Span) {
 	select {
 	case <-ctx.Done():
 		// Context is already done, return a no-op span
@@ -115,14 +112,16 @@ func (th *Tracer) CreateSpan(logger *logrus.Logger, ctx context.Context, paramet
 	default:
 	}
 
-	spanName := th.GetCallerFunctionName(2)
+	spanName, _ := th.GetCallerFunctionName(2)
 	ctx, span := th.tracer.Start(ctx, spanName)
 	environment := os.Getenv("ENVIRONMENT")
 	if environment == "" {
 		environment = "default"
 	}
 	span.SetAttributes(attribute.String("environment", environment))
-	span.SetAttributes(attribute.String("url", th.ReturnGitHubEndpoint(2)))
+	if githubURL, err := th.ReturnGitHubEndpoint(2); err == nil {
+		span.SetAttributes(attribute.String("url", githubURL))
+	}
 
 	for key, value := range parameters {
 		span.SetAttributes(attribute.String("param."+key, value))
@@ -130,52 +129,46 @@ func (th *Tracer) CreateSpan(logger *logrus.Logger, ctx context.Context, paramet
 	return ctx, span
 }
 
-func (th *Tracer) ReturnGitHubEndpoint(logger *logrus.Logger, level int) string {
+func (th *Tracer) ReturnGitHubEndpoint(level int) (string, error) {
 	_, file, line, ok := runtime.Caller(level)
 	if !ok {
-		logger.Error("Could not retrieve caller information")
-		return ""
+		return "", errors.New("could not retrieve caller information")
 	}
 	projectPath := th.ServiceName + "/"
 	idx := strings.Index(file, projectPath)
 	if idx == -1 {
 		// fallback: just return the file name and line
-		logger.Warn("Project path not found in file path")
-		return fmt.Sprintf("%s#L%d", file, line)
+		return fmt.Sprintf("%s#L%d", file, line), nil
 	}
 	// Build the GitHub URL format
 	relPath := file[idx+len(projectPath):]
-	return fmt.Sprintf("github.com/uug-ai/"+th.ServiceName+"/blob/main/%s#L%d", relPath, line)
+	return fmt.Sprintf("github.com/uug-ai/"+th.ServiceName+"/blob/main/%s#L%d", relPath, line), nil
 }
 
-func (th *Tracer) ReturnFilePath(logger *logrus.Logger, level int) string {
+func (th *Tracer) ReturnFilePath(level int) (string, error) {
 	_, file, line, ok := runtime.Caller(level)
 	if !ok {
-		logger.Error("Could not retrieve caller information")
-		return ""
+		return "", errors.New("could not retrieve caller information")
 	}
 	projectPath := th.ServiceName + "/"
 	idx := strings.Index(file, projectPath)
 	if idx == -1 {
 		// fallback: just return the file name and line
-		logger.Warn("Project path not found in file path")
-		return fmt.Sprintf("%s#L%d", file, line)
+		return fmt.Sprintf("%s#L%d", file, line), nil
 	}
 	// Build the GitHub URL format
 	relPath := file[idx+len(projectPath):]
-	return relPath
+	return relPath, nil
 }
 
-func (th *Tracer) GetCallerFunctionName(logger *logrus.Logger, level int) string {
+func (th *Tracer) GetCallerFunctionName(level int) (string, error) {
 	pc, _, _, ok := runtime.Caller(level)
 	if !ok {
-		logger.Error("Could not retrieve caller information")
-		return ""
+		return "", errors.New("could not retrieve caller information")
 	}
 	fn := runtime.FuncForPC(pc)
 	if fn == nil {
-		logger.Error("Could not retrieve function information")
-		return ""
+		return "", errors.New("could not retrieve function information")
 	}
 
 	functionName := fn.Name()
@@ -186,18 +179,17 @@ func (th *Tracer) GetCallerFunctionName(logger *logrus.Logger, level int) string
 
 	parts := strings.Split(functionName, "/")
 	if len(parts) == 0 {
-		logger.Error("Function name split resulted in empty parts")
-		return ""
+		return "", errors.New("function name split resulted in empty parts")
 	}
 	functionName = parts[len(parts)-1]
-	return functionName
+	return functionName, nil
 }
 
 func (th *Tracer) Audit(parameters map[string]string) {
 	// This is a no-op function for now, but can be used to log audit information
 	// or perform additional actions related to tracing.
 	// You can implement your own logic here if needed.
-	actionName := th.GetCallerFunctionName(2)
+	actionName, _ := th.GetCallerFunctionName(2)
 	fmt.Printf("Audit action: %s with parameters: %v\n", actionName, parameters)
 
 	// Write audit to mongodb or any other storage

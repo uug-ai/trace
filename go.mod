@@ -3,7 +3,6 @@ module github.com/uug-ai/tracer
 go 1.24.10
 
 require (
-	github.com/sirupsen/logrus v1.9.3
 	go.opentelemetry.io/otel v1.39.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.39.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.39.0

@@ -35,27 +35,25 @@ package main
 
 import (
     "context"
-    "github.com/sirupsen/logrus"
+    "log"
     "github.com/uug-ai/tracer/pkg/opentelemetry"
 )
 
 func main() {
-    logger := logrus.New()
-    
     // Create a new OpenTelemetry tracer
     tracer, err := opentelemetry.NewTracer("my-service")
     if err != nil {
-        logger.Fatal("Failed to create tracer: ", err)
+        log.Fatal("Failed to create tracer: ", err)
     }
     
     // Initialize the tracer
-    if err := tracer.Initialize(logger); err != nil {
-        logger.Fatal("Failed to initialize tracer: ", err)
+    if err := tracer.Initialize(); err != nil {
+        log.Fatal("Failed to initialize tracer: ", err)
     }
     
     // Connect to the OTLP endpoint
-    if err := tracer.Connect(logger); err != nil {
-        logger.Warn("Failed to connect tracer: ", err)
+    if err := tracer.Connect(); err != nil {
+        log.Println("Failed to connect tracer: ", err)
     }
 }
 ```
@@ -89,9 +87,9 @@ export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
 The `CreateSpan` method creates a new span and returns an updated context along with the span object. This is the primary way to instrument your code.
 
 ```go
-func ProcessOrder(ctx context.Context, tracer *opentelemetry.Tracer, logger *logrus.Logger) {
+func ProcessOrder(ctx context.Context, tracer *opentelemetry.Tracer) {
     // Create a new span for this operation
-    ctx, span := tracer.CreateSpan(logger, ctx, map[string]string{
+    ctx, span := tracer.CreateSpan(ctx, map[string]string{
         "order_id": "12345",
         "customer": "john@example.com",
         "amount":   "99.99",
@@ -99,13 +97,13 @@ func ProcessOrder(ctx context.Context, tracer *opentelemetry.Tracer, logger *log
     defer span.End() // Always end the span when done
     
     // Your business logic here
-    processPayment(ctx, tracer, logger)
-    updateInventory(ctx, tracer, logger)
+    processPayment(ctx, tracer)
+    updateInventory(ctx, tracer)
 }
 
-func processPayment(ctx context.Context, tracer *opentelemetry.Tracer, logger *logrus.Logger) {
+func processPayment(ctx context.Context, tracer *opentelemetry.Tracer) {
     // Create a nested span
-    ctx, span := tracer.CreateSpan(logger, ctx, map[string]string{
+    ctx, span := tracer.CreateSpan(ctx, map[string]string{
         "payment_method": "credit_card",
         "gateway":        "stripe",
     })
@@ -167,21 +165,24 @@ func ProcessItem(ctx context.Context, itemID string) {
 When receiving requests from other services, use `ContinueWithTrace` to continue the distributed trace:
 
 ```go
-func HandleIncomingRequest(traceID string, tracer *opentelemetry.Tracer, logger *logrus.Logger) {
+func HandleIncomingRequest(traceID string, tracer *opentelemetry.Tracer) error {
     // Create a base context
     ctx := context.Background()
     
     // Continue the trace from the incoming trace ID
-    ctx = tracer.ContinueWithTrace(logger, ctx, traceID)
+    ctx, err := tracer.ContinueWithTrace(ctx, traceID)
+    if err != nil {
+        return fmt.Errorf("failed to continue trace: %w", err)
+    }
     
     // Now create spans that will be part of the distributed trace
-    ctx, span := tracer.CreateSpan(logger, ctx, map[string]string{
+    ctx, span := tracer.CreateSpan(ctx, map[string]string{
         "request_id": "req-789",
     })
     defer span.End()
     
     // Process the request
-    processRequest(ctx, tracer, logger)
+    return processRequest(ctx, tracer)
 }
 ```
 
@@ -195,32 +196,30 @@ package main
 import (
     "context"
     "fmt"
+    "log"
     "time"
     
-    "github.com/sirupsen/logrus"
     "github.com/uug-ai/tracer/pkg/opentelemetry"
     otelTrace "go.opentelemetry.io/otel/trace"
     "go.opentelemetry.io/otel/attribute"
 )
 
 func main() {
-    logger := logrus.New()
-    
     // Initialize tracer
     tracer, _ := opentelemetry.NewTracer("order-service")
-    tracer.Initialize(logger)
-    tracer.Connect(logger)
+    tracer.Initialize()
+    tracer.Connect()
     
     // Create root context
     ctx := context.Background()
     
     // Process an order
-    ProcessOrder(ctx, tracer, logger, "order-123")
+    ProcessOrder(ctx, tracer, "order-123")
 }
 
-func ProcessOrder(ctx context.Context, tracer *opentelemetry.Tracer, logger *logrus.Logger, orderID string) {
+func ProcessOrder(ctx context.Context, tracer *opentelemetry.Tracer, orderID string) {
     // Create a span for the entire order processing
-    ctx, span := tracer.CreateSpan(logger, ctx, map[string]string{
+    ctx, span := tracer.CreateSpan(ctx, map[string]string{
         "order_id": orderID,
         "action":   "process_order",
     })
@@ -231,27 +230,27 @@ func ProcessOrder(ctx context.Context, tracer *opentelemetry.Tracer, logger *log
     currentSpan.AddEvent("Order processing started")
     
     // Validate order
-    if err := ValidateOrder(ctx, tracer, logger, orderID); err != nil {
+    if err := ValidateOrder(ctx, tracer, orderID); err != nil {
         currentSpan.RecordError(err)
         currentSpan.SetAttributes(attribute.Bool("order_valid", false))
-        logger.Error("Order validation failed: ", err)
+        log.Println("Order validation failed: ", err)
         return
     }
     
     currentSpan.SetAttributes(attribute.Bool("order_valid", true))
     
     // Process payment
-    ProcessPayment(ctx, tracer, logger, orderID)
+    ProcessPayment(ctx, tracer, orderID)
     
     // Update inventory
-    UpdateInventory(ctx, tracer, logger, orderID)
+    UpdateInventory(ctx, tracer, orderID)
     
     currentSpan.AddEvent("Order processing completed")
-    logger.Info("Order processed successfully")
+    log.Println("Order processed successfully")
 }
 
-func ValidateOrder(ctx context.Context, tracer *opentelemetry.Tracer, logger *logrus.Logger, orderID string) error {
-    ctx, span := tracer.CreateSpan(logger, ctx, map[string]string{
+func ValidateOrder(ctx context.Context, tracer *opentelemetry.Tracer, orderID string) error {
+    ctx, span := tracer.CreateSpan(ctx, map[string]string{
         "order_id": orderID,
     })
     defer span.End()
@@ -269,8 +268,8 @@ func ValidateOrder(ctx context.Context, tracer *opentelemetry.Tracer, logger *lo
     return nil
 }
 
-func ProcessPayment(ctx context.Context, tracer *opentelemetry.Tracer, logger *logrus.Logger, orderID string) {
-    ctx, span := tracer.CreateSpan(logger, ctx, map[string]string{
+func ProcessPayment(ctx context.Context, tracer *opentelemetry.Tracer, orderID string) {
+    ctx, span := tracer.CreateSpan(ctx, map[string]string{
         "order_id":       orderID,
         "payment_method": "credit_card",
     })
@@ -287,8 +286,8 @@ func ProcessPayment(ctx context.Context, tracer *opentelemetry.Tracer, logger *l
     )
 }
 
-func UpdateInventory(ctx context.Context, tracer *opentelemetry.Tracer, logger *logrus.Logger, orderID string) {
-    ctx, span := tracer.CreateSpan(logger, ctx, map[string]string{
+func UpdateInventory(ctx context.Context, tracer *opentelemetry.Tracer, orderID string) {
+    ctx, span := tracer.CreateSpan(ctx, map[string]string{
         "order_id": orderID,
     })
     defer span.End()
@@ -312,10 +311,10 @@ The core interface that all tracer implementations must satisfy:
 
 ```go
 type TracerInterface interface {
-    Initialize(logger *logrus.Logger) error
-    Connect(logger *logrus.Logger) error
+    Initialize() error
+    Connect() error
     CreateSpan(ctx context.Context, parameters map[string]string) (context.Context, any)
-    ContinueWithTrace(ctx context.Context, traceID string) context.Context
+    ContinueWithTrace(ctx context.Context, traceID string) (context.Context, error)
     Audit(parameters map[string]string)
 }
 ```
@@ -325,17 +324,16 @@ type TracerInterface interface {
 #### `NewTracer(serviceName string) (*Tracer, error)`
 Creates a new OpenTelemetry tracer instance.
 
-#### `Initialize(logger *logrus.Logger) error`
+#### `Initialize() error`
 Initializes the tracer with the service name.
 
-#### `Connect(logger *logrus.Logger) error`
+#### `Connect() error`
 Connects to the OTLP endpoint specified in `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
-#### `CreateSpan(logger *logrus.Logger, ctx context.Context, parameters map[string]string) (context.Context, otelTrace.Span)`
+#### `CreateSpan(ctx context.Context, parameters map[string]string) (context.Context, otelTrace.Span)`
 Creates a new span with automatic naming based on the calling function. Returns updated context and span.
 
 **Parameters:**
-- `logger`: Logger instance for debugging
 - `ctx`: Parent context
 - `parameters`: Key-value pairs to add as span attributes
 
@@ -343,16 +341,16 @@ Creates a new span with automatic naming based on the calling function. Returns 
 - Updated context with the new span
 - The created span object
 
-#### `ContinueWithTrace(logger *logrus.Logger, ctx context.Context, traceID string) context.Context`
+#### `ContinueWithTrace(ctx context.Context, traceID string) (context.Context, error)`
 Continues a trace from a remote trace ID for distributed tracing.
 
 **Parameters:**
-- `logger`: Logger instance
 - `ctx`: Base context
 - `traceID`: Hex-encoded trace ID from upstream service
 
 **Returns:**
 - Context with remote span context
+- Error if the trace ID is invalid
 
 #### `Audit(parameters map[string]string)`
 Logs audit information (currently a no-op, but can be extended).

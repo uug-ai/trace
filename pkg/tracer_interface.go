@@ -2,14 +2,12 @@ package pkg
 
 import (
 	"context"
-
-	"github.com/sirupsen/logrus"
 )
 
 type TracerInterface interface {
-	Initialize(logger *logrus.Logger) error
-	Connect(logger *logrus.Logger) error
+	Initialize() error
+	Connect() error
 	CreateSpan(ctx context.Context, parameters map[string]string) (context.Context, any)
-	ContinueWithTrace(ctx context.Context, traceID string) context.Context
+	ContinueWithTrace(ctx context.Context, traceID string) (context.Context, error)
 	Audit(parameters map[string]string)
 }
