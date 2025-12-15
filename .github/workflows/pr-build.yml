@@ -1,0 +1,51 @@
+name: Build pull request
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+env:
+
+  # Build variables
+  ORGANIZATION: uug-ai
+  PROJECT: ${{ github.event.repository.name }}
+  GO_VERSION: "1.24"
+  GO_DIR : "./"
+
+jobs:
+
+  build:
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - architecture: amd64
+            runner: ubuntu-24.04
+          - architecture: arm64
+            runner: sh-ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "${{ env.GO_VERSION }}"
+          check-latest: true
+          cache-dependency-path: |
+            go.sum
+      # Build the Golang application
+      - name: Build Golang application
+        run: |
+          go build
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.TOKEN }}
+      - name: Run Build
+        run: |
+          docker build -t ${{matrix.architecture}} \
+          --build-arg github_username=${{ secrets.USERNAME }} \
+          --build-arg github_token=${{ secrets.TOKEN }} .
