@@ -49,44 +49,6 @@ func TestNewTracer(t *testing.T) {
 	}
 }
 
-func TestTracer_Initialize(t *testing.T) {
-	tests := []struct {
-		name        string
-		serviceName string
-		wantErr     bool
-	}{
-		{
-			name:        "initializes tracer successfully",
-			serviceName: "tracer",
-			wantErr:     false,
-		},
-		{
-			name:        "initializes with different service name",
-			serviceName: "test-service",
-			wantErr:     false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tracer, err := NewTracer(tt.serviceName)
-			if err != nil {
-				t.Fatalf("NewTracer() failed: %v", err)
-			}
-
-			err = tracer.Initialize()
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Initialize() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			if tracer.tracer == nil {
-				t.Error("Initialize() did not set tracer field")
-			}
-		})
-	}
-}
-
 func TestTracer_Connect(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -223,11 +185,6 @@ func TestTracer_CreateSpan(t *testing.T) {
 			tracer, err := NewTracer(tt.serviceName)
 			if err != nil {
 				t.Fatalf("NewTracer() failed: %v", err)
-			}
-
-			err = tracer.Initialize()
-			if err != nil {
-				t.Fatalf("Initialize() failed: %v", err)
 			}
 
 			// Create context
@@ -558,11 +515,6 @@ func TestIntegration_SpanCreationAndExport(t *testing.T) {
 	tracer, err := NewTracer("tracer")
 	if err != nil {
 		t.Fatalf("NewTracer() failed: %v", err)
-	}
-
-	err = tracer.Initialize()
-	if err != nil {
-		t.Fatalf("Initialize() failed: %v", err)
 	}
 
 	// Create a span

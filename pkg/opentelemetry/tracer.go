@@ -20,22 +20,11 @@ import (
 
 type Tracer struct {
 	ServiceName   string
-	tracer        otelTrace.Tracer
 	traceProvider *trace.TracerProvider
 }
 
 func NewTracer(serviceName string) (*Tracer, error) {
 	return &Tracer{ServiceName: serviceName}, nil
-}
-
-func (th *Tracer) Initialize() error {
-	filePath, err := th.ReturnFilePath(2)
-	if err != nil {
-		return fmt.Errorf("failed to get file path: %w", err)
-	}
-	tracer := otel.Tracer(filePath)
-	th.tracer = tracer
-	return nil
 }
 
 // Shutdown gracefully shuts down the tracer provider, ensuring all spans are exported.
@@ -123,8 +112,14 @@ func (th *Tracer) CreateSpan(ctx context.Context, parameters map[string]string) 
 	default:
 	}
 
+	var tracer otelTrace.Tracer
+	filePath, err := th.ReturnFilePath(2)
+	if err == nil {
+		tracer = otel.Tracer(filePath)
+	}
+
 	spanName, _ := th.GetCallerFunctionName(2)
-	ctx, span := th.tracer.Start(ctx, spanName)
+	ctx, span := tracer.Start(ctx, spanName)
 	environment := os.Getenv("ENVIRONMENT")
 	if environment == "" {
 		environment = "default"
