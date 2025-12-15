@@ -38,6 +38,17 @@ func (th *Tracer) Initialize() error {
 	return nil
 }
 
+// Shutdown gracefully shuts down the tracer provider, ensuring all spans are exported.
+func (th *Tracer) Shutdown(ctx context.Context) error {
+	if th.traceProvider != nil {
+		return th.traceProvider.Shutdown(ctx)
+	}
+	return nil
+}
+
+// Connect sets up the OpenTelemetry tracer provider with an OTLP exporter.
+// It reads the OTEL_EXPORTER_OTLP_ENDPOINT environment variable to determine
+// where to send the trace data.
 func (th *Tracer) Connect() error {
 	// Get the OTEL endpoint from environment variable
 	otelEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
