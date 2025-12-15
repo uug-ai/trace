@@ -1,4 +1,4 @@
-package utils
+package opentelemetry
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
@@ -17,56 +18,70 @@ import (
 	otelTrace "go.opentelemetry.io/otel/trace"
 )
 
-func Connect(serviceName string) (*trace.TracerProvider, error) {
+type Tracer struct {
+	ServiceName   string
+	tracer        otelTrace.Tracer
+	traceProvider *trace.TracerProvider
+}
+
+func NewTracer(serviceName string) (*Tracer, error) {
+	return &Tracer{ServiceName: serviceName}, nil
+}
+
+func (th *Tracer) Initialize(logger *logrus.Logger) error {
+	tracer := otel.Tracer(th.ReturnFilePath(2))
+	th.tracer = tracer
+	logger.Debug("Initialized OpenTelemetry Tracer for service: ", th.ServiceName)
+	return nil
+}
+
+func (th *Tracer) Connect(logger *logrus.Logger) (*trace.TracerProvider, error) {
+
+	logger.Debug("Connecting to OpenTelemetry Tracer Provider")
+
 	headers := map[string]string{
 		"content-type": "application/json",
 	}
 	var traceProvider *trace.TracerProvider
-	otelEndpoint := ""
-	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); endpoint != "" {
-		otelEndpoint = endpoint
-		// Configure client options based on endpoint scheme
-		clientOpts := []otlptracehttp.Option{
-			otlptracehttp.WithEndpoint(otelEndpoint),
-			otlptracehttp.WithHeaders(headers),
-			otlptracehttp.WithURLPath("/v1/traces"),
-		}
-		// Only use insecure for http:// endpoints
-		if strings.HasPrefix(endpoint, "http://") {
-			clientOpts = append(clientOpts, otlptracehttp.WithInsecure())
-		}
-		exporter, err := otlptrace.New(
-			context.Background(),
-			otlptracehttp.NewClient(clientOpts...),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("creating new exporter: %w", err)
-		}
-		tracerprovider := trace.NewTracerProvider(
-			trace.WithBatcher(exporter),
-			trace.WithResource(
-				resource.NewWithAttributes(
-					semconv.SchemaURL,
-					semconv.ServiceNameKey.String(serviceName),
-					attribute.String("environment", "develop"),
-				),
-			),
-		)
 
-		otel.SetTracerProvider(tracerprovider)
-		traceProvider = tracerprovider
-		return traceProvider, nil
+	// Get the OTEL endpoint from environment variable
+	otelEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if otelEndpoint == "" {
+		logger.Warn("OTEL_EXPORTER_OTLP_ENDPOINT is not set, skipping OpenTelemetry setup")
+		return nil, fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT is not set")
 	}
-	return traceProvider, fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT is not set")
-}
 
-type Tracer struct {
-	tracer otelTrace.Tracer
-}
+	// Configure client options based on endpoint scheme
+	clientOpts := []otlptracehttp.Option{
+		otlptracehttp.WithEndpoint(otelEndpoint),
+		otlptracehttp.WithHeaders(headers),
+		otlptracehttp.WithURLPath("/v1/traces"),
+	}
+	// Only use insecure for http:// endpoints
+	if strings.HasPrefix(otelEndpoint, "http://") {
+		clientOpts = append(clientOpts, otlptracehttp.WithInsecure())
+	}
+	exporter, err := otlptrace.New(
+		context.Background(),
+		otlptracehttp.NewClient(clientOpts...),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating new exporter: %w", err)
+	}
+	tracerprovider := trace.NewTracerProvider(
+		trace.WithBatcher(exporter),
+		trace.WithResource(
+			resource.NewWithAttributes(
+				semconv.SchemaURL,
+				semconv.ServiceNameKey.String(th.ServiceName),
+				attribute.String("environment", "develop"),
+			),
+		),
+	)
 
-func NewTracer() (*Tracer, error) {
-	tracer := otel.Tracer(returnFilePath(2))
-	return &Tracer{tracer: tracer}, nil
+	otel.SetTracerProvider(tracerprovider)
+	traceProvider = tracerprovider
+	return traceProvider, nil
 }
 
 func (th *Tracer) CreateSpanContext(ctx context.Context, traceID string) context.Context {
@@ -90,26 +105,26 @@ func (th *Tracer) CreateSpan(ctx context.Context, parameters map[string]string) 
 	default:
 	}
 
-	spanName := GetCallerFunctionName(2)
+	spanName := th.GetCallerFunctionName(2)
 	ctx, span := th.tracer.Start(ctx, spanName)
 	environment := os.Getenv("ENVIRONMENT")
 	if environment == "" {
 		environment = "default"
 	}
 	span.SetAttributes(attribute.String("environment", environment))
-	span.SetAttributes(attribute.String("url", returnGitHubEndpoint(2)))
+	span.SetAttributes(attribute.String("url", th.ReturnGitHubEndpoint(2)))
 	for key, value := range parameters {
 		span.SetAttributes(attribute.String("param."+key, value))
 	}
 	return ctx, span
 }
 
-func returnGitHubEndpoint(level int) string {
+func (th *Tracer) ReturnGitHubEndpoint(level int) string {
 	_, file, line, ok := runtime.Caller(level)
 	if !ok {
 		return ""
 	}
-	projectPath := ServiceName + "/"
+	projectPath := th.ServiceName + "/"
 	idx := strings.Index(file, projectPath)
 	if idx == -1 {
 		// fallback: just return the file name and line
@@ -117,15 +132,15 @@ func returnGitHubEndpoint(level int) string {
 	}
 	// Build the GitHub URL format
 	relPath := file[idx+len(projectPath):]
-	return fmt.Sprintf("github.com/uug-ai/"+ServiceName+"/blob/main/%s#L%d", relPath, line)
+	return fmt.Sprintf("github.com/uug-ai/"+th.ServiceName+"/blob/main/%s#L%d", relPath, line)
 }
 
-func returnFilePath(level int) string {
+func (th *Tracer) ReturnFilePath(level int) string {
 	_, file, line, ok := runtime.Caller(level)
 	if !ok {
 		return ""
 	}
-	projectPath := ServiceName + "/"
+	projectPath := th.ServiceName + "/"
 	idx := strings.Index(file, projectPath)
 	if idx == -1 {
 		// fallback: just return the file name and line
@@ -136,7 +151,7 @@ func returnFilePath(level int) string {
 	return relPath
 }
 
-func GetCallerFunctionName(level int) string {
+func (th *Tracer) GetCallerFunctionName(level int) string {
 	pc, _, _, ok := runtime.Caller(level)
 	if !ok {
 		return ""
@@ -160,17 +175,17 @@ func GetCallerFunctionName(level int) string {
 	return functionName
 }
 
-/*func (th *Tracer) Audit(parameters map[string]string) {
+func (th *Tracer) Audit(parameters map[string]string) {
 	// This is a no-op function for now, but can be used to log audit information
 	// or perform additional actions related to tracing.
 	// You can implement your own logic here if needed.
-	actionName := GetCallerFunctionName(2)
+	actionName := th.GetCallerFunctionName(2)
+	fmt.Printf("Audit action: %s with parameters: %v\n", actionName, parameters)
 
 	// Write audit to mongodb or any other storage
 	//...
-	db.Collectioms.Audit.InsertOne(context.Background(), map[string]interface{}{
+	/*db.Collectioms.Audit.InsertOne(context.Background(), map[string]interface{}{
 		"action":      actionName,
 		"timestamp":   time.Now().Unix(),
-	});
-
-}	*/
+	});*/
+}
