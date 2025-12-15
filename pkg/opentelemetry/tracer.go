@@ -35,40 +35,43 @@ func (th *Tracer) Initialize(logger *logrus.Logger) error {
 	return nil
 }
 
-func (th *Tracer) Connect(logger *logrus.Logger) (*trace.TracerProvider, error) {
+func (th *Tracer) Connect(logger *logrus.Logger) error {
 
 	logger.Debug("Connecting to OpenTelemetry Tracer Provider")
-
-	headers := map[string]string{
-		"content-type": "application/json",
-	}
-	var traceProvider *trace.TracerProvider
 
 	// Get the OTEL endpoint from environment variable
 	otelEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if otelEndpoint == "" {
 		logger.Warn("OTEL_EXPORTER_OTLP_ENDPOINT is not set, skipping OpenTelemetry setup")
-		return nil, fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT is not set")
+		return fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT is not set")
 	}
 
 	// Configure client options based on endpoint scheme
 	clientOpts := []otlptracehttp.Option{
 		otlptracehttp.WithEndpoint(otelEndpoint),
-		otlptracehttp.WithHeaders(headers),
+		otlptracehttp.WithHeaders(map[string]string{
+			"content-type": "application/json",
+		}),
 		otlptracehttp.WithURLPath("/v1/traces"),
 	}
+
 	// Only use insecure for http:// endpoints
 	if strings.HasPrefix(otelEndpoint, "http://") {
 		clientOpts = append(clientOpts, otlptracehttp.WithInsecure())
 	}
+
+	// Create the OTLP trace exporter
 	exporter, err := otlptrace.New(
 		context.Background(),
 		otlptracehttp.NewClient(clientOpts...),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("creating new exporter: %w", err)
+		logger.Error("Error creating OTLP trace exporter: ", err)
+		return fmt.Errorf("creating new exporter: %w", err)
 	}
-	tracerprovider := trace.NewTracerProvider(
+
+	// Create the trace provider with the exporter
+	traceProvider := trace.NewTracerProvider(
 		trace.WithBatcher(exporter),
 		trace.WithResource(
 			resource.NewWithAttributes(
@@ -79,12 +82,17 @@ func (th *Tracer) Connect(logger *logrus.Logger) (*trace.TracerProvider, error) 
 		),
 	)
 
-	otel.SetTracerProvider(tracerprovider)
-	traceProvider = tracerprovider
-	return traceProvider, nil
+	// Set the global tracer provider
+	otel.SetTracerProvider(traceProvider)
+	th.traceProvider = traceProvider
+	logger.Debug("Connected to OpenTelemetry Tracer Provider at ", otelEndpoint)
+
+	return nil
 }
 
-func (th *Tracer) CreateSpanContext(ctx context.Context, traceID string) context.Context {
+// ContinueWithTrace continues a trace from the given trace ID in the context.
+// This is useful for propagating traces across service boundaries.
+func (th *Tracer) ContinueWithTrace(ctx context.Context, traceID string) context.Context {
 	tid, err := otelTrace.TraceIDFromHex(traceID)
 	if err != nil {
 		return ctx
@@ -97,6 +105,7 @@ func (th *Tracer) CreateSpanContext(ctx context.Context, traceID string) context
 	return otelTrace.ContextWithRemoteSpanContext(ctx, spanContext)
 }
 
+// CreateSpan creates a new span with the given parameters and returns the updated context and span.
 func (th *Tracer) CreateSpan(ctx context.Context, parameters map[string]string) (context.Context, otelTrace.Span) {
 	select {
 	case <-ctx.Done():
@@ -113,6 +122,7 @@ func (th *Tracer) CreateSpan(ctx context.Context, parameters map[string]string) 
 	}
 	span.SetAttributes(attribute.String("environment", environment))
 	span.SetAttributes(attribute.String("url", th.ReturnGitHubEndpoint(2)))
+
 	for key, value := range parameters {
 		span.SetAttributes(attribute.String("param."+key, value))
 	}
