@@ -78,22 +78,3 @@ jobs:
             ghcr.io/$ORGANIZATION/$PROJECT-platform:amd64-${{github.event.inputs.tag || github.ref_name}} \
             ghcr.io/$ORGANIZATION/$PROJECT-platform:arm64-${{github.event.inputs.tag || github.ref_name}}
           docker manifest push ghcr.io/$ORGANIZATION/$PROJECT:latest
-
-  update-gitops:
-    runs-on: ubuntu-24.04
-    needs: [create-manifest]
-    steps:
-      # After we build the Docker image, we create a pull request to update the GitOps repository
-      # This will allow us to update the Helm chart with the new Docker image tag.
-      - name: Create GitOps Pull Request
-        uses: cedricve/gitops-pullrequest-action@master
-        with:
-          github-token: ${{ secrets.TOKEN }}
-          gitops-repo: "${{ env.GITOPS_REPO }}"
-          gitops-file: "${{ env.GITOPS_FILE }}"
-          gitops-pr-branch: "release-${{ env.PROJECT }}-${{ github.event.inputs.tag || github.ref_name }}"
-          gitops-key: "${{ env.GITOPS_KEY }}"
-          gitops-value: "${{ env.GITOPS_VALUE }}"
-          commit-email: "gitops@uug.ai"
-          commit-name: "GitOps - UUG.AI"
-          commit-message: "A new release for ${{ env.PROJECT }} - ${{ github.event.inputs.tag || github.ref_name }}"
