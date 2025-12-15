@@ -92,9 +92,10 @@ func (th *Tracer) Connect(logger *logrus.Logger) error {
 
 // ContinueWithTrace continues a trace from the given trace ID in the context.
 // This is useful for propagating traces across service boundaries.
-func (th *Tracer) ContinueWithTrace(ctx context.Context, traceID string) context.Context {
+func (th *Tracer) ContinueWithTrace(logger *logrus.Logger, ctx context.Context, traceID string) context.Context {
 	tid, err := otelTrace.TraceIDFromHex(traceID)
 	if err != nil {
+		logger.Error("Invalid trace ID: ", err)
 		return ctx
 	}
 	spanContext := otelTrace.NewSpanContext(otelTrace.SpanContextConfig{
@@ -106,7 +107,7 @@ func (th *Tracer) ContinueWithTrace(ctx context.Context, traceID string) context
 }
 
 // CreateSpan creates a new span with the given parameters and returns the updated context and span.
-func (th *Tracer) CreateSpan(ctx context.Context, parameters map[string]string) (context.Context, otelTrace.Span) {
+func (th *Tracer) CreateSpan(logger *logrus.Logger, ctx context.Context, parameters map[string]string) (context.Context, otelTrace.Span) {
 	select {
 	case <-ctx.Done():
 		// Context is already done, return a no-op span
@@ -129,15 +130,17 @@ func (th *Tracer) CreateSpan(ctx context.Context, parameters map[string]string) 
 	return ctx, span
 }
 
-func (th *Tracer) ReturnGitHubEndpoint(level int) string {
+func (th *Tracer) ReturnGitHubEndpoint(logger *logrus.Logger, level int) string {
 	_, file, line, ok := runtime.Caller(level)
 	if !ok {
+		logger.Error("Could not retrieve caller information")
 		return ""
 	}
 	projectPath := th.ServiceName + "/"
 	idx := strings.Index(file, projectPath)
 	if idx == -1 {
 		// fallback: just return the file name and line
+		logger.Warn("Project path not found in file path")
 		return fmt.Sprintf("%s#L%d", file, line)
 	}
 	// Build the GitHub URL format
@@ -145,15 +148,17 @@ func (th *Tracer) ReturnGitHubEndpoint(level int) string {
 	return fmt.Sprintf("github.com/uug-ai/"+th.ServiceName+"/blob/main/%s#L%d", relPath, line)
 }
 
-func (th *Tracer) ReturnFilePath(level int) string {
+func (th *Tracer) ReturnFilePath(logger *logrus.Logger, level int) string {
 	_, file, line, ok := runtime.Caller(level)
 	if !ok {
+		logger.Error("Could not retrieve caller information")
 		return ""
 	}
 	projectPath := th.ServiceName + "/"
 	idx := strings.Index(file, projectPath)
 	if idx == -1 {
 		// fallback: just return the file name and line
+		logger.Warn("Project path not found in file path")
 		return fmt.Sprintf("%s#L%d", file, line)
 	}
 	// Build the GitHub URL format
@@ -161,13 +166,15 @@ func (th *Tracer) ReturnFilePath(level int) string {
 	return relPath
 }
 
-func (th *Tracer) GetCallerFunctionName(level int) string {
+func (th *Tracer) GetCallerFunctionName(logger *logrus.Logger, level int) string {
 	pc, _, _, ok := runtime.Caller(level)
 	if !ok {
+		logger.Error("Could not retrieve caller information")
 		return ""
 	}
 	fn := runtime.FuncForPC(pc)
 	if fn == nil {
+		logger.Error("Could not retrieve function information")
 		return ""
 	}
 
@@ -179,6 +186,7 @@ func (th *Tracer) GetCallerFunctionName(level int) string {
 
 	parts := strings.Split(functionName, "/")
 	if len(parts) == 0 {
+		logger.Error("Function name split resulted in empty parts")
 		return ""
 	}
 	functionName = parts[len(parts)-1]
