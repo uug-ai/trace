@@ -387,18 +387,3 @@ services:
 **Context propagation issues:**
 - Ensure you're passing the updated context from `CreateSpan`
 - Verify the context isn't being replaced with a new background context
-
-## License
-
-[Include your license information here]
-
-## Contributing
-
-Contributions are welcome! Please follow the [Conventional Commits](https://www.conventionalcommits.org/) specification for commit messages.
-
-Example:
-```
-feat(tracer): add support for custom span attributes
-fix(opentelemetry): correct trace ID propagation
-docs(readme): improve usage examples
-```
