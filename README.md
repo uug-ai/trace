@@ -23,7 +23,7 @@ The `tracer` library provides:
 ## Installation
 
 ```bash
-go get github.com/uug-ai/tracer
+go get github.com/uug-ai/trace
 ```
 
 ## Quick Start
