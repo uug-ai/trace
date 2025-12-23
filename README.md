@@ -23,7 +23,7 @@ The `tracer` library provides:
 ## Installation
 
 ```bash
-go get github.com/uug-ai/tracer
+go get github.com/uug-ai/trace
 ```
 
 ## Quick Start
@@ -44,11 +44,6 @@ func main() {
     tracer, err := opentelemetry.NewTracer("my-service")
     if err != nil {
         log.Fatal("Failed to create tracer: ", err)
-    }
-    
-    // Initialize the tracer
-    if err := tracer.Initialize(); err != nil {
-        log.Fatal("Failed to initialize tracer: ", err)
     }
     
     // Connect to the OTLP endpoint
@@ -207,7 +202,6 @@ import (
 func main() {
     // Initialize tracer
     tracer, _ := opentelemetry.NewTracer("order-service")
-    tracer.Initialize()
     tracer.Connect()
     
     // Create root context
@@ -311,7 +305,6 @@ The core interface that all tracer implementations must satisfy:
 
 ```go
 type TracerInterface interface {
-    Initialize() error
     Connect() error
     CreateSpan(ctx context.Context, parameters map[string]string) (context.Context, any)
     ContinueWithTrace(ctx context.Context, traceID string) (context.Context, error)
@@ -323,9 +316,6 @@ type TracerInterface interface {
 
 #### `NewTracer(serviceName string) (*Tracer, error)`
 Creates a new OpenTelemetry tracer instance.
-
-#### `Initialize() error`
-Initializes the tracer with the service name.
 
 #### `Connect() error`
 Connects to the OTLP endpoint specified in `OTEL_EXPORTER_OTLP_ENDPOINT`.
@@ -397,18 +387,3 @@ services:
 **Context propagation issues:**
 - Ensure you're passing the updated context from `CreateSpan`
 - Verify the context isn't being replaced with a new background context
-
-## License
-
-[Include your license information here]
-
-## Contributing
-
-Contributions are welcome! Please follow the [Conventional Commits](https://www.conventionalcommits.org/) specification for commit messages.
-
-Example:
-```
-feat(tracer): add support for custom span attributes
-fix(opentelemetry): correct trace ID propagation
-docs(readme): improve usage examples
-```

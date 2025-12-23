@@ -45,9 +45,16 @@ func (th *Tracer) Connect() error {
 		return fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT is not set")
 	}
 
+	// Determine if using insecure HTTP
+	isInsecure := strings.HasPrefix(otelEndpoint, "http://")
+
+	// Strip scheme from endpoint - the client handles scheme internally
+	endpoint := strings.TrimPrefix(otelEndpoint, "https://")
+	endpoint = strings.TrimPrefix(endpoint, "http://")
+
 	// Configure client options based on endpoint scheme
 	clientOpts := []otlptracehttp.Option{
-		otlptracehttp.WithEndpoint(otelEndpoint),
+		otlptracehttp.WithEndpoint(endpoint),
 		otlptracehttp.WithHeaders(map[string]string{
 			"content-type": "application/json",
 		}),
@@ -55,7 +62,7 @@ func (th *Tracer) Connect() error {
 	}
 
 	// Only use insecure for http:// endpoints
-	if strings.HasPrefix(otelEndpoint, "http://") {
+	if isInsecure {
 		clientOpts = append(clientOpts, otlptracehttp.WithInsecure())
 	}
 
