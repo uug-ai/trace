@@ -38,11 +38,22 @@ func (th *Tracer) Shutdown(ctx context.Context) error {
 // Connect sets up the OpenTelemetry tracer provider with an OTLP exporter.
 // It reads the OTEL_EXPORTER_OTLP_ENDPOINT environment variable to determine
 // where to send the trace data.
+//
+// Tracing is an optional, best-effort observability concern: when
+// OTEL_EXPORTER_OTLP_ENDPOINT is not set the tracer stays in no-op mode and
+// Connect returns nil instead of an error. No global tracer provider is
+// installed, so the OpenTelemetry SDK's default no-op provider is used and
+// CreateSpan transparently produces no-op spans. This keeps a missing (or
+// intentionally disabled, e.g. Helm opentelemetry.enabled=false) collector from
+// taking down the calling service — callers that treat a Connect error as fatal
+// must not be crashed just because tracing is off.
 func (th *Tracer) Connect() error {
 	// Get the OTEL endpoint from environment variable
 	otelEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if otelEndpoint == "" {
-		return fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT is not set")
+		// No endpoint configured: run without tracing (no-op) rather than
+		// failing. The global provider is left untouched (default no-op).
+		return nil
 	}
 
 	// Determine if using insecure HTTP

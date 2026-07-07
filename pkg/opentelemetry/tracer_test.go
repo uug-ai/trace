@@ -51,31 +51,38 @@ func TestNewTracer(t *testing.T) {
 
 func TestTracer_Connect(t *testing.T) {
 	tests := []struct {
-		name        string
-		endpoint    string
-		wantErr     bool
-		errContains string
+		name         string
+		endpoint     string
+		wantErr      bool
+		errContains  string
+		wantProvider bool
 	}{
 		{
-			name:        "fails when OTEL_EXPORTER_OTLP_ENDPOINT not set",
-			endpoint:    "",
-			wantErr:     true,
-			errContains: "OTEL_EXPORTER_OTLP_ENDPOINT is not set",
+			// Tracing is optional: an unset endpoint must not error. The
+			// tracer stays in no-op mode (no provider installed) so callers
+			// that treat a Connect error as fatal are not crashed.
+			name:         "no-op when OTEL_EXPORTER_OTLP_ENDPOINT not set",
+			endpoint:     "",
+			wantErr:      false,
+			wantProvider: false,
 		},
 		{
-			name:     "succeeds with http endpoint",
-			endpoint: "http://localhost:4318",
-			wantErr:  false,
+			name:         "succeeds with http endpoint",
+			endpoint:     "http://localhost:4318",
+			wantErr:      false,
+			wantProvider: true,
 		},
 		{
-			name:     "succeeds with https endpoint",
-			endpoint: "https://otel-collector.example.com:4318",
-			wantErr:  false,
+			name:         "succeeds with https endpoint",
+			endpoint:     "https://otel-collector.example.com:4318",
+			wantErr:      false,
+			wantProvider: true,
 		},
 		{
-			name:     "succeeds with hostname only",
-			endpoint: "localhost:4318",
-			wantErr:  false,
+			name:         "succeeds with hostname only",
+			endpoint:     "localhost:4318",
+			wantErr:      false,
+			wantProvider: true,
 		},
 	}
 
@@ -111,10 +118,12 @@ func TestTracer_Connect(t *testing.T) {
 				}
 			}
 
-			if !tt.wantErr {
+			if tt.wantProvider {
 				if tracer.traceProvider == nil {
 					t.Error("Connect() did not set traceProvider")
 				}
+			} else if tracer.traceProvider != nil {
+				t.Error("Connect() set traceProvider in no-op mode")
 			}
 
 			// Cleanup
