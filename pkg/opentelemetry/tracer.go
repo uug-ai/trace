@@ -63,12 +63,11 @@ func (th *Tracer) Connect() error {
 	endpoint := strings.TrimPrefix(otelEndpoint, "https://")
 	endpoint = strings.TrimPrefix(endpoint, "http://")
 
-	// Configure client options based on endpoint scheme
+	// Configure client options based on endpoint scheme. The OTLP HTTP
+	// exporter encodes spans as protobuf, so we let it set its own
+	// Content-Type (application/x-protobuf) rather than mislabelling the body.
 	clientOpts := []otlptracehttp.Option{
 		otlptracehttp.WithEndpoint(endpoint),
-		otlptracehttp.WithHeaders(map[string]string{
-			"content-type": "application/json",
-		}),
 		otlptracehttp.WithURLPath("/v1/traces"),
 	}
 
@@ -86,6 +85,13 @@ func (th *Tracer) Connect() error {
 		return fmt.Errorf("creating new exporter: %w", err)
 	}
 
+	// Resolve the deployment environment from the ENVIRONMENT variable so the
+	// resource reflects reality (prod/staging/...) instead of a hardcoded value.
+	environment := os.Getenv("ENVIRONMENT")
+	if environment == "" {
+		environment = "default"
+	}
+
 	// Create the trace provider with the exporter
 	traceProvider := trace.NewTracerProvider(
 		trace.WithBatcher(exporter),
@@ -93,7 +99,7 @@ func (th *Tracer) Connect() error {
 			resource.NewWithAttributes(
 				semconv.SchemaURL,
 				semconv.ServiceNameKey.String(th.ServiceName),
-				attribute.String("environment", "develop"),
+				attribute.String("environment", environment),
 			),
 		),
 	)

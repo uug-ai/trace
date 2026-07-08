@@ -39,11 +39,21 @@ jobs:
           oras pull ghcr.io/aquasecurity/trivy-db:2
           tar -xzf db.tar.gz -C $GITHUB_WORKSPACE/.cache/trivy/db
 
+      # Install Trivy manually instead of letting trivy-action's setup-trivy do
+      # it, which is flaky/rate-limited against GitHub releases and fails the run.
+      - name: Install Trivy
+        run: |
+          TRIVY_VERSION="0.69.3"
+          curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o /tmp/trivy.tar.gz
+          tar -xzf /tmp/trivy.tar.gz -C /tmp
+          sudo mv /tmp/trivy /usr/local/bin/trivy
+          trivy --version
+
       # Scan the Docker image for vulnerabilities
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@v0.33.1
         with:
-          skip-setup-trivy: false
+          skip-setup-trivy: true
           scan-type: "image"
           image-ref: ${{ env.PROJECT }}
           format: "table"
@@ -56,3 +66,4 @@ jobs:
           #github-pat: ${{ secrets.TOKEN }}
         env:
           TRIVY_SKIP_DB_UPDATE: true
+          TRIVY_CACHE_DIR: ${{ github.workspace }}/.cache/trivy
