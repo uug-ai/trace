@@ -437,10 +437,10 @@ func TestTracer_ReturnGitHubEndpoint(t *testing.T) {
 	}{
 		{
 			name:        "returns GitHub endpoint from current call",
-			serviceName: "tracer",
+			serviceName: "trace",
 			level:       1,
 			wantErr:     false,
-			wantContain: []string{"github.com/uug-ai/tracer", "tracer_test.go", "#L"},
+			wantContain: []string{"github.com/uug-ai/trace", "tracer_test.go", "#L"},
 		},
 	}
 
