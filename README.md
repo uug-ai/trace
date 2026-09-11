@@ -181,6 +181,22 @@ func HandleIncomingRequest(traceID string, tracer *opentelemetry.Tracer) error {
 }
 ```
 
+For queue and message boundaries, carry the W3C parent context as well as the
+legacy trace ID. `ContinueWithTraceContext` accepts the parent only when its
+trace ID matches the trusted message trace ID; malformed or mismatched carriers
+fall back to trace-ID-only continuation.
+
+```go
+carrier := tracer.InjectTraceContext(ctx)
+
+ctx, err := tracer.ContinueWithTraceContext(context.Background(), traceID, carrier)
+if err != nil {
+    log.Printf("trace parent unavailable, using trace ID fallback: %v", err)
+}
+ctx, span := tracer.CreateSpan(ctx, nil)
+defer span.End()
+```
+
 ### Complete Example
 
 Here's a complete example showing a typical use case:

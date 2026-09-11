@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
@@ -21,6 +22,11 @@ import (
 type Tracer struct {
 	ServiceName   string
 	traceProvider *trace.TracerProvider
+}
+
+type TraceContextCarrier struct {
+	TraceParent string `json:"traceparent,omitempty"`
+	TraceState  string `json:"tracestate,omitempty"`
 }
 
 func NewTracer(serviceName string) (*Tracer, error) {
@@ -125,6 +131,41 @@ func (th *Tracer) ContinueWithTrace(ctx context.Context, traceID string) (contex
 		Remote:  true,
 	})
 	return otelTrace.ContextWithRemoteSpanContext(ctx, spanContext), nil
+}
+
+// InjectTraceContext serializes the current W3C parent context for transport
+// across a queue or other process boundary.
+func (th *Tracer) InjectTraceContext(ctx context.Context) TraceContextCarrier {
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
+	return TraceContextCarrier{
+		TraceParent: carrier.Get("traceparent"),
+		TraceState:  carrier.Get("tracestate"),
+	}
+}
+
+// ContinueWithTraceContext restores a W3C parent context when it is valid and
+// agrees with traceID. Invalid or mismatched carriers fall back to the legacy
+// trace-ID-only context and return an error so callers can log the degradation.
+func (th *Tracer) ContinueWithTraceContext(ctx context.Context, traceID string, carrier TraceContextCarrier) (context.Context, error) {
+	if carrier.TraceParent == "" && carrier.TraceState == "" {
+		return th.ContinueWithTrace(ctx, traceID)
+	}
+
+	values := propagation.MapCarrier{}
+	values.Set("traceparent", carrier.TraceParent)
+	values.Set("tracestate", carrier.TraceState)
+	extracted := propagation.TraceContext{}.Extract(ctx, values)
+	spanContext := otelTrace.SpanContextFromContext(extracted)
+	if spanContext.IsValid() && spanContext.TraceID().String() == traceID {
+		return extracted, nil
+	}
+
+	fallback, err := th.ContinueWithTrace(ctx, traceID)
+	if err != nil {
+		return ctx, errors.Join(errors.New("invalid or mismatched trace context carrier"), err)
+	}
+	return fallback, errors.New("invalid or mismatched trace context carrier")
 }
 
 // CreateSpan creates a new span with the given parameters and returns the updated context and span.

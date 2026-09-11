@@ -356,6 +356,68 @@ func TestTracer_ContinueWithTrace(t *testing.T) {
 	}
 }
 
+func TestTracer_TraceContextCarrier(t *testing.T) {
+	tracer, err := NewTracer("test-service")
+	if err != nil {
+		t.Fatalf("NewTracer() failed: %v", err)
+	}
+
+	traceID, err := otelTrace.TraceIDFromHex("00000000000000000000000000000001")
+	if err != nil {
+		t.Fatalf("TraceIDFromHex() failed: %v", err)
+	}
+	spanID, err := otelTrace.SpanIDFromHex("0000000000000002")
+	if err != nil {
+		t.Fatalf("SpanIDFromHex() failed: %v", err)
+	}
+	parent := otelTrace.NewSpanContext(otelTrace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: otelTrace.FlagsSampled,
+	})
+	ctx := otelTrace.ContextWithSpanContext(context.Background(), parent)
+
+	carrier := tracer.InjectTraceContext(ctx)
+	if carrier.TraceParent != "00-00000000000000000000000000000001-0000000000000002-01" {
+		t.Fatalf("traceparent = %q", carrier.TraceParent)
+	}
+
+	continued, err := tracer.ContinueWithTraceContext(context.Background(), traceID.String(), carrier)
+	if err != nil {
+		t.Fatalf("ContinueWithTraceContext() failed: %v", err)
+	}
+	got := otelTrace.SpanContextFromContext(continued)
+	if !got.IsRemote() || got.TraceID() != traceID || got.SpanID() != spanID {
+		t.Fatalf("continued span context = %v, want remote parent %v", got, parent)
+	}
+}
+
+func TestTracer_ContinueWithTraceContextFallsBackToTraceID(t *testing.T) {
+	tracer, err := NewTracer("test-service")
+	if err != nil {
+		t.Fatalf("NewTracer() failed: %v", err)
+	}
+
+	const traceID = "0123456789abcdef0123456789abcdef"
+	for _, tc := range []struct {
+		name    string
+		carrier TraceContextCarrier
+	}{
+		{name: "malformed", carrier: TraceContextCarrier{TraceParent: "invalid"}},
+		{name: "mismatched", carrier: TraceContextCarrier{TraceParent: "00-11111111111111111111111111111111-0000000000000002-01"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, err := tracer.ContinueWithTraceContext(context.Background(), traceID, tc.carrier)
+			if err == nil {
+				t.Fatal("ContinueWithTraceContext() error = nil, want carrier validation error")
+			}
+			if got := otelTrace.SpanContextFromContext(ctx).TraceID().String(); got != traceID {
+				t.Fatalf("fallback trace ID = %s, want %s", got, traceID)
+			}
+		})
+	}
+}
+
 func TestTracer_GetCallerFunctionName(t *testing.T) {
 	tracer, err := NewTracer("tracer")
 	if err != nil {
