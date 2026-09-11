@@ -188,6 +188,9 @@ fall back to trace-ID-only continuation.
 
 ```go
 carrier := tracer.InjectTraceContext(ctx)
+payload, err := opentelemetry.MarshalWithTraceContext(message, carrier)
+
+carrier, err = opentelemetry.UnmarshalWithTraceContext(payload, &message)
 
 ctx, err := tracer.ContinueWithTraceContext(context.Background(), traceID, carrier)
 if err != nil {

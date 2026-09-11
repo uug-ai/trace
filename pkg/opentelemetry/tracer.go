@@ -2,6 +2,7 @@ package opentelemetry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -27,6 +28,40 @@ type Tracer struct {
 type TraceContextCarrier struct {
 	TraceParent string `json:"traceparent,omitempty"`
 	TraceState  string `json:"tracestate,omitempty"`
+}
+
+// MarshalWithTraceContext marshals value as a JSON object and adds the optional
+// W3C carrier fields without requiring them on the message's domain model.
+func MarshalWithTraceContext(value any, carrier TraceContextCarrier) ([]byte, error) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil {
+		return nil, fmt.Errorf("trace context requires a JSON object: %w", err)
+	}
+	if carrier.TraceParent != "" {
+		object["traceparent"], _ = json.Marshal(carrier.TraceParent)
+	}
+	if carrier.TraceState != "" {
+		object["tracestate"], _ = json.Marshal(carrier.TraceState)
+	}
+	return json.Marshal(object)
+}
+
+// UnmarshalWithTraceContext decodes a JSON message and returns any top-level
+// W3C carrier fields alongside it.
+func UnmarshalWithTraceContext(payload []byte, value any) (TraceContextCarrier, error) {
+	if err := json.Unmarshal(payload, value); err != nil {
+		return TraceContextCarrier{}, err
+	}
+	var carrier TraceContextCarrier
+	if err := json.Unmarshal(payload, &carrier); err != nil {
+		return TraceContextCarrier{}, err
+	}
+	return carrier, nil
 }
 
 func NewTracer(serviceName string) (*Tracer, error) {

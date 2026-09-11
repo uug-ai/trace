@@ -2,6 +2,7 @@ package opentelemetry
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -415,6 +416,38 @@ func TestTracer_ContinueWithTraceContextFallsBackToTraceID(t *testing.T) {
 				t.Fatalf("fallback trace ID = %s, want %s", got, traceID)
 			}
 		})
+	}
+}
+
+func TestTraceContextJSONRoundTrip(t *testing.T) {
+	type message struct {
+		Operation string `json:"operation"`
+	}
+
+	wantCarrier := TraceContextCarrier{
+		TraceParent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+		TraceState:  "vendor=value",
+	}
+	payload, err := MarshalWithTraceContext(message{Operation: "anpr"}, wantCarrier)
+	if err != nil {
+		t.Fatalf("MarshalWithTraceContext() failed: %v", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Fatalf("json.Unmarshal() failed: %v", err)
+	}
+	if _, ok := raw["operation"]; !ok {
+		t.Fatal("payload lost operation field")
+	}
+
+	var got message
+	gotCarrier, err := UnmarshalWithTraceContext(payload, &got)
+	if err != nil {
+		t.Fatalf("UnmarshalWithTraceContext() failed: %v", err)
+	}
+	if got.Operation != "anpr" || gotCarrier != wantCarrier {
+		t.Fatalf("round trip = (%+v, %+v), want (%+v, %+v)", got, gotCarrier, message{Operation: "anpr"}, wantCarrier)
 	}
 }
 
