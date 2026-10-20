@@ -356,6 +356,265 @@ func TestTracer_ContinueWithTrace(t *testing.T) {
 	}
 }
 
+func TestTracer_ContinueWithTraceData(t *testing.T) {
+	const (
+		traceID       = "0123456789abcdef0123456789abcdef"
+		spanID        = "a1b2c3d4e5f60718"
+		otherTraceID  = "fedcba9876543210fedcba9876543210"
+		sampledParent = "00-" + traceID + "-" + spanID + "-01"
+	)
+
+	tests := []struct {
+		name        string
+		traceID     string
+		data        map[string]any
+		wantErr     bool
+		wantTraceID string
+		wantSpanID  string
+		wantSampled bool
+		wantState   string
+	}{
+		{
+			name:        "continues from a sampled traceparent",
+			traceID:     traceID,
+			data:        map[string]any{TraceParentKey: sampledParent},
+			wantTraceID: traceID,
+			wantSpanID:  spanID,
+			wantSampled: true,
+		},
+		{
+			name:        "keeps an unsampled decision",
+			traceID:     traceID,
+			data:        map[string]any{TraceParentKey: "00-" + traceID + "-" + spanID + "-00"},
+			wantTraceID: traceID,
+			wantSpanID:  spanID,
+			wantSampled: false,
+		},
+		{
+			name:        "carries tracestate",
+			traceID:     traceID,
+			data:        map[string]any{TraceParentKey: sampledParent, TraceStateKey: "vendor=value"},
+			wantTraceID: traceID,
+			wantSpanID:  spanID,
+			wantSampled: true,
+			wantState:   "vendor=value",
+		},
+		{
+			name:        "matches the trace ID case-insensitively",
+			traceID:     strings.ToUpper(traceID),
+			data:        map[string]any{TraceParentKey: sampledParent},
+			wantTraceID: traceID,
+			wantSpanID:  spanID,
+			wantSampled: true,
+		},
+		{
+			name:        "accepts any valid traceparent without a trace ID",
+			traceID:     "",
+			data:        map[string]any{TraceParentKey: sampledParent},
+			wantTraceID: traceID,
+			wantSpanID:  spanID,
+			wantSampled: true,
+		},
+		{
+			name:        "falls back to the trace ID without a traceparent",
+			traceID:     traceID,
+			data:        map[string]any{"thumby": "inline"},
+			wantTraceID: traceID,
+		},
+		{
+			name:        "falls back to the trace ID with nil data",
+			traceID:     traceID,
+			data:        nil,
+			wantTraceID: traceID,
+		},
+		{
+			name:        "ignores a non-string traceparent",
+			traceID:     traceID,
+			data:        map[string]any{TraceParentKey: 42},
+			wantTraceID: traceID,
+		},
+		{
+			name:        "rejects a traceparent from another trace",
+			traceID:     traceID,
+			data:        map[string]any{TraceParentKey: "00-" + otherTraceID + "-" + spanID + "-01"},
+			wantErr:     true,
+			wantTraceID: traceID,
+		},
+		{
+			name:        "rejects a malformed traceparent",
+			traceID:     traceID,
+			data:        map[string]any{TraceParentKey: "not-a-traceparent"},
+			wantErr:     true,
+			wantTraceID: traceID,
+		},
+		{
+			name:    "fails without a trace ID or traceparent",
+			traceID: "",
+			data:    nil,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracer, err := NewTracer("test-service")
+			if err != nil {
+				t.Fatalf("NewTracer() failed: %v", err)
+			}
+
+			newCtx, err := tracer.ContinueWithTraceData(context.Background(), tt.traceID, tt.data)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ContinueWithTraceData() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if newCtx == nil {
+				t.Fatal("ContinueWithTraceData() returned nil context")
+			}
+
+			spanContext := otelTrace.SpanContextFromContext(newCtx)
+			if tt.wantTraceID != "" && spanContext.TraceID().String() != tt.wantTraceID {
+				t.Errorf("TraceID = %v, want %v", spanContext.TraceID(), tt.wantTraceID)
+			}
+			if tt.wantSpanID != "" {
+				if spanContext.SpanID().String() != tt.wantSpanID {
+					t.Errorf("SpanID = %v, want %v", spanContext.SpanID(), tt.wantSpanID)
+				}
+				if !spanContext.IsRemote() {
+					t.Error("parent span context should be marked as remote")
+				}
+			} else if spanContext.SpanID().IsValid() {
+				t.Errorf("SpanID = %v, want none for a trace-ID-only fallback", spanContext.SpanID())
+			}
+			if spanContext.IsSampled() != tt.wantSampled {
+				t.Errorf("IsSampled() = %v, want %v", spanContext.IsSampled(), tt.wantSampled)
+			}
+			if got := spanContext.TraceState().String(); got != tt.wantState {
+				t.Errorf("TraceState = %q, want %q", got, tt.wantState)
+			}
+		})
+	}
+}
+
+func TestTracer_InjectTraceData(t *testing.T) {
+	tracer, err := NewTracer("test-service")
+	if err != nil {
+		t.Fatalf("NewTracer() failed: %v", err)
+	}
+
+	traceID, _ := otelTrace.TraceIDFromHex("0123456789abcdef0123456789abcdef")
+	spanID, _ := otelTrace.SpanIDFromHex("a1b2c3d4e5f60718")
+	state, _ := otelTrace.ParseTraceState("vendor=value")
+	spanContext := otelTrace.NewSpanContext(otelTrace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: otelTrace.FlagsSampled,
+		TraceState: state,
+	})
+	ctx := otelTrace.ContextWithSpanContext(context.Background(), spanContext)
+	want := "00-" + traceID.String() + "-" + spanID.String() + "-01"
+
+	t.Run("allocates data when nil", func(t *testing.T) {
+		data := tracer.InjectTraceData(ctx, nil)
+		if data[TraceParentKey] != want {
+			t.Errorf("traceparent = %v, want %q", data[TraceParentKey], want)
+		}
+		if data[TraceStateKey] != "vendor=value" {
+			t.Errorf("tracestate = %v, want %q", data[TraceStateKey], "vendor=value")
+		}
+	})
+
+	t.Run("overwrites an upstream traceparent and keeps other keys", func(t *testing.T) {
+		data := map[string]any{
+			TraceParentKey: "00-" + traceID.String() + "-0000000000000001-01",
+			"thumby":       "inline",
+		}
+		data = tracer.InjectTraceData(ctx, data)
+		if data[TraceParentKey] != want {
+			t.Errorf("traceparent = %v, want %q", data[TraceParentKey], want)
+		}
+		if data["thumby"] != "inline" {
+			t.Errorf("thumby = %v, want it untouched", data["thumby"])
+		}
+	})
+
+	t.Run("drops a stale tracestate", func(t *testing.T) {
+		noState := otelTrace.ContextWithSpanContext(context.Background(), otelTrace.NewSpanContext(otelTrace.SpanContextConfig{
+			TraceID:    traceID,
+			SpanID:     spanID,
+			TraceFlags: otelTrace.FlagsSampled,
+		}))
+		data := tracer.InjectTraceData(noState, map[string]any{TraceStateKey: "stale=1"})
+		if _, ok := data[TraceStateKey]; ok {
+			t.Errorf("tracestate = %v, want it removed", data[TraceStateKey])
+		}
+	})
+
+	t.Run("leaves data unchanged without a span context", func(t *testing.T) {
+		upstream := "00-" + traceID.String() + "-0000000000000001-01"
+		data := tracer.InjectTraceData(context.Background(), map[string]any{TraceParentKey: upstream})
+		if data[TraceParentKey] != upstream {
+			t.Errorf("traceparent = %v, want upstream %q kept", data[TraceParentKey], upstream)
+		}
+		if got := tracer.InjectTraceData(context.Background(), nil); got != nil {
+			t.Errorf("InjectTraceData(nil) = %v, want nil", got)
+		}
+	})
+}
+
+// TestIntegration_HeadSamplingFollowsTraceData shows why downstream services
+// must continue from the traceparent rather than the trace ID alone: with a
+// parentbased_always_off sampler only the carried decision can make a span
+// record, while a trace-ID-only parent is treated as a new (dropped) root.
+func TestIntegration_HeadSamplingFollowsTraceData(t *testing.T) {
+	const traceID = "0123456789abcdef0123456789abcdef"
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := trace.NewTracerProvider(
+		trace.WithSyncer(exporter),
+		trace.WithSampler(trace.ParentBased(trace.NeverSample())),
+	)
+	defer tp.Shutdown(context.Background())
+	otel.SetTracerProvider(tp)
+
+	tracer, _ := NewTracer("test-service")
+	tests := []struct {
+		name       string
+		data       map[string]any
+		wantRecord bool
+	}{
+		{"sampled upstream", map[string]any{TraceParentKey: "00-" + traceID + "-a1b2c3d4e5f60718-01"}, true},
+		{"unsampled upstream", map[string]any{TraceParentKey: "00-" + traceID + "-a1b2c3d4e5f60718-00"}, false},
+		{"trace ID only", nil, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, err := tracer.ContinueWithTraceData(context.Background(), traceID, tt.data)
+			if err != nil {
+				t.Fatalf("ContinueWithTraceData() error = %v", err)
+			}
+			stageCtx, span := tracer.CreateSpan(ctx, nil)
+			if span.IsRecording() != tt.wantRecord {
+				t.Errorf("IsRecording() = %v, want %v", span.IsRecording(), tt.wantRecord)
+			}
+
+			// The forwarded traceparent names this stage's span and keeps the decision.
+			data := tracer.InjectTraceData(stageCtx, nil)
+			forwarded, err := tracer.ContinueWithTraceData(context.Background(), traceID, data)
+			if err != nil {
+				t.Fatalf("ContinueWithTraceData(forwarded) error = %v", err)
+			}
+			next := otelTrace.SpanContextFromContext(forwarded)
+			if next.SpanID() != span.SpanContext().SpanID() {
+				t.Errorf("forwarded parent = %v, want this stage's span %v", next.SpanID(), span.SpanContext().SpanID())
+			}
+			if tt.data != nil && next.IsSampled() != tt.wantRecord {
+				t.Errorf("forwarded IsSampled() = %v, want %v", next.IsSampled(), tt.wantRecord)
+			}
+			span.End()
+		})
+	}
+}
+
 func TestTracer_GetCallerFunctionName(t *testing.T) {
 	tracer, err := NewTracer("tracer")
 	if err != nil {

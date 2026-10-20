@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
@@ -125,6 +126,77 @@ func (th *Tracer) ContinueWithTrace(ctx context.Context, traceID string) (contex
 		Remote:  true,
 	})
 	return otelTrace.ContextWithRemoteSpanContext(ctx, spanContext), nil
+}
+
+// W3C trace-context keys carried inside a message's data map (for example
+// models.PipelineEvent.Data), next to the message's legacy trace ID.
+const (
+	TraceParentKey = "traceparent"
+	TraceStateKey  = "tracestate"
+)
+
+var errInvalidTraceData = errors.New("invalid or mismatched traceparent in message data")
+
+// ContinueWithTraceData continues traceID with the W3C traceparent/tracestate
+// found in data as the remote parent. Unlike ContinueWithTrace, this keeps the
+// sender's span ID and sampling decision: the next span becomes a child of the
+// sender's span, and a parent-based sampler follows the upstream decision
+// instead of sampling the message as a new root.
+//
+// The traceparent is only trusted when its trace ID matches traceID (any valid
+// traceparent is accepted when traceID is empty). When data carries no
+// traceparent, this behaves exactly like ContinueWithTrace. A malformed or
+// mismatched traceparent falls back to ContinueWithTrace and returns an error
+// so callers can log the degradation; the returned context is still usable.
+func (th *Tracer) ContinueWithTraceData(ctx context.Context, traceID string, data map[string]any) (context.Context, error) {
+	carrier := propagation.MapCarrier{}
+	for _, key := range []string{TraceParentKey, TraceStateKey} {
+		if value, ok := data[key].(string); ok && value != "" {
+			carrier.Set(key, value)
+		}
+	}
+	if carrier.Get(TraceParentKey) == "" {
+		return th.ContinueWithTrace(ctx, traceID)
+	}
+
+	extracted := propagation.TraceContext{}.Extract(ctx, carrier)
+	spanContext := otelTrace.SpanContextFromContext(extracted)
+	if spanContext.IsValid() && (traceID == "" || strings.EqualFold(spanContext.TraceID().String(), traceID)) {
+		return extracted, nil
+	}
+
+	fallback, err := th.ContinueWithTrace(ctx, traceID)
+	if err != nil {
+		return ctx, errors.Join(errInvalidTraceData, err)
+	}
+	return fallback, errInvalidTraceData
+}
+
+// InjectTraceData writes the span context in ctx into data as traceparent (and
+// tracestate when present), so the consumer of the message continues from this
+// span. Call it with the context of the span that handled the message, right
+// before the message is forwarded or published. It allocates data when nil and
+// returns it. When ctx holds no valid span context (for example tracing is
+// disabled), data is returned unchanged so an upstream traceparent passes
+// through untouched.
+func (th *Tracer) InjectTraceData(ctx context.Context, data map[string]any) map[string]any {
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
+	traceParent := carrier.Get(TraceParentKey)
+	if traceParent == "" {
+		return data
+	}
+
+	if data == nil {
+		data = make(map[string]any, 2)
+	}
+	data[TraceParentKey] = traceParent
+	if traceState := carrier.Get(TraceStateKey); traceState != "" {
+		data[TraceStateKey] = traceState
+	} else {
+		delete(data, TraceStateKey)
+	}
+	return data
 }
 
 // CreateSpan creates a new span with the given parameters and returns the updated context and span.

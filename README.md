@@ -181,6 +181,34 @@ func HandleIncomingRequest(traceID string, tracer *opentelemetry.Tracer) error {
 }
 ```
 
+`ContinueWithTrace` only carries the trace ID. The next span joins the trace, but it has no parent span and no sampling decision, so a parent-based sampler treats it as a new root and decides again in every service.
+
+### Continuing Traces Through Queue Messages
+
+Messages that carry a W3C `traceparent` in their data map (for example `models.PipelineEvent.Data`) should use `ContinueWithTraceData` and `InjectTraceData` instead. The consumer's span becomes a child of the sender's span and follows the sender's sampling decision, so head sampling at the first service (`OTEL_TRACES_SAMPLER=parentbased_traceidratio`) applies to the whole pipeline, and downstream services can run with `OTEL_TRACES_SAMPLER=parentbased_always_off`.
+
+```go
+func handleMessage(event models.PipelineEvent, tracer *opentelemetry.Tracer) (models.PipelineAction, models.PipelineEvent) {
+    // Continue from the sender's span; falls back to the trace ID alone when
+    // the message has no (or a mismatched) traceparent.
+    ctx, err := tracer.ContinueWithTraceData(context.Background(), event.TraceId, event.Data)
+    if err != nil {
+        log.Printf("trace continuation degraded: %v", err)
+    }
+
+    ctx, span := tracer.CreateSpan(ctx, nil)
+    defer span.End()
+
+    // ... handle the event ...
+
+    // Hand this stage's span to the next consumer before forwarding.
+    event.Data = tracer.InjectTraceData(ctx, event.Data)
+    return models.PipelineForward, event
+}
+```
+
+Inject from the span that handled the message, not from a nested span (a database call, for instance), so the next stage nests under the stage itself.
+
 ### Complete Example
 
 Here's a complete example showing a typical use case:
@@ -341,6 +369,28 @@ Continues a trace from a remote trace ID for distributed tracing.
 **Returns:**
 - Context with remote span context
 - Error if the trace ID is invalid
+
+#### `ContinueWithTraceData(ctx context.Context, traceID string, data map[string]any) (context.Context, error)`
+Continues a trace from the W3C `traceparent`/`tracestate` stored in a message's data map, keeping the sender's span as parent and its sampling decision.
+
+**Parameters:**
+- `ctx`: Base context
+- `traceID`: Hex-encoded trace ID of the message; the `traceparent` is only trusted when it belongs to this trace (any valid `traceparent` is accepted when empty)
+- `data`: Message data map holding `traceparent` and optionally `tracestate`
+
+**Returns:**
+- Context with the remote parent, or the `ContinueWithTrace` context when `data` has no `traceparent`
+- Error when the `traceparent` is malformed or belongs to another trace (the returned context falls back to the trace ID and is still usable), or when no trace can be continued at all
+
+#### `InjectTraceData(ctx context.Context, data map[string]any) map[string]any`
+Writes the span context in `ctx` into `data` as `traceparent` (and `tracestate` when present) before a message is forwarded or published.
+
+**Parameters:**
+- `ctx`: Context of the span that handled the message
+- `data`: Message data map; allocated when nil
+
+**Returns:**
+- The updated data map, or `data` unchanged when `ctx` holds no valid span context
 
 #### `Audit(parameters map[string]string)`
 Logs audit information (currently a no-op, but can be extended).
