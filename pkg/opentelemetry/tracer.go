@@ -199,6 +199,37 @@ func (th *Tracer) InjectTraceData(ctx context.Context, data map[string]any) map[
 	return data
 }
 
+// TraceContextCarrier is the W3C trace context of one queue hop, for messages
+// that carry it as typed fields rather than in a data map (for example
+// models.WorkflowRun.TraceParent / TraceState).
+type TraceContextCarrier struct {
+	TraceParent string `json:"traceparent,omitempty"`
+	TraceState  string `json:"tracestate,omitempty"`
+}
+
+// ContinueWithTraceContext is ContinueWithTraceData for a typed carrier: it
+// continues traceID with the carrier's traceparent as the remote parent, keeping
+// the sender's span and sampling decision, and falls back to ContinueWithTrace
+// (with an error for a malformed or mismatched traceparent) like
+// ContinueWithTraceData does.
+func (th *Tracer) ContinueWithTraceContext(ctx context.Context, traceID string, carrier TraceContextCarrier) (context.Context, error) {
+	return th.ContinueWithTraceData(ctx, traceID, map[string]any{
+		TraceParentKey: carrier.TraceParent,
+		TraceStateKey:  carrier.TraceState,
+	})
+}
+
+// InjectTraceContext returns the span context in ctx as a typed carrier, so the
+// consumer of the message continues from this span. Call it with the context of
+// the span that handled the message, right before publishing. It is empty when
+// ctx holds no valid span context.
+func (th *Tracer) InjectTraceContext(ctx context.Context) TraceContextCarrier {
+	data := th.InjectTraceData(ctx, nil)
+	traceParent, _ := data[TraceParentKey].(string)
+	traceState, _ := data[TraceStateKey].(string)
+	return TraceContextCarrier{TraceParent: traceParent, TraceState: traceState}
+}
+
 // CreateSpan creates a new span with the given parameters and returns the updated context and span.
 func (th *Tracer) CreateSpan(ctx context.Context, parameters map[string]string) (context.Context, otelTrace.Span) {
 	select {

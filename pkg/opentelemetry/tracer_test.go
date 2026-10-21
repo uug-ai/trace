@@ -839,3 +839,55 @@ func TestIntegration_SpanCreationAndExport(t *testing.T) {
 		t.Error("Span missing action parameter")
 	}
 }
+
+// The typed carrier round-trips through a message hop with the same semantics
+// as the data-map helpers: the consumer nests under the sender's span and keeps
+// its sampling decision, and a carrier without a traceparent falls back to the
+// trace ID.
+func TestTracer_TraceContextCarrier(t *testing.T) {
+	const traceID = "0123456789abcdef0123456789abcdef"
+	tracer, _ := NewTracer("test-service")
+
+	spanID, _ := otelTrace.SpanIDFromHex("a1b2c3d4e5f60718")
+	tid, _ := otelTrace.TraceIDFromHex(traceID)
+	state, _ := otelTrace.ParseTraceState("vendor=value")
+	for _, flags := range []otelTrace.TraceFlags{otelTrace.FlagsSampled, 0} {
+		sender := otelTrace.ContextWithSpanContext(context.Background(), otelTrace.NewSpanContext(otelTrace.SpanContextConfig{
+			TraceID: tid, SpanID: spanID, TraceFlags: flags, TraceState: state,
+		}))
+
+		carrier := tracer.InjectTraceContext(sender)
+		if want := "00-" + traceID + "-" + spanID.String() + "-" + flags.String(); carrier.TraceParent != want {
+			t.Fatalf("TraceParent = %q, want %q", carrier.TraceParent, want)
+		}
+		if carrier.TraceState != "vendor=value" {
+			t.Fatalf("TraceState = %q, want %q", carrier.TraceState, "vendor=value")
+		}
+
+		ctx, err := tracer.ContinueWithTraceContext(context.Background(), traceID, carrier)
+		if err != nil {
+			t.Fatalf("ContinueWithTraceContext() error = %v", err)
+		}
+		parent := otelTrace.SpanContextFromContext(ctx)
+		if parent.SpanID() != spanID || !parent.IsRemote() || parent.IsSampled() != flags.IsSampled() {
+			t.Fatalf("parent = %v remote=%v sampled=%v, want sender span with its decision", parent.SpanID(), parent.IsRemote(), parent.IsSampled())
+		}
+		if parent.TraceState().String() != "vendor=value" {
+			t.Fatalf("TraceState = %q", parent.TraceState().String())
+		}
+	}
+
+	if got := tracer.InjectTraceContext(context.Background()); got != (TraceContextCarrier{}) {
+		t.Fatalf("InjectTraceContext() without a span = %+v, want empty", got)
+	}
+	ctx, err := tracer.ContinueWithTraceContext(context.Background(), traceID, TraceContextCarrier{})
+	if err != nil {
+		t.Fatalf("ContinueWithTraceContext(empty) error = %v", err)
+	}
+	if fallback := otelTrace.SpanContextFromContext(ctx); fallback.TraceID().String() != traceID || fallback.SpanID().IsValid() {
+		t.Fatalf("empty carrier = %v/%v, want the trace-ID-only fallback", fallback.TraceID(), fallback.SpanID())
+	}
+	if _, err := tracer.ContinueWithTraceContext(context.Background(), traceID, TraceContextCarrier{TraceParent: "garbage"}); err == nil {
+		t.Fatal("ContinueWithTraceContext(malformed) error = nil, want the degradation reported")
+	}
+}
