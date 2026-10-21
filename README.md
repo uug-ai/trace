@@ -209,6 +209,18 @@ func handleMessage(event models.PipelineEvent, tracer *opentelemetry.Tracer) (mo
 
 Inject from the span that handled the message, not from a nested span (a database call, for instance), so the next stage nests under the stage itself.
 
+Messages that carry the trace context as typed fields instead of a data map (for example `models.WorkflowRun.TraceParent` / `TraceState`) use `ContinueWithTraceContext` and `InjectTraceContext` with a `TraceContextCarrier`; the semantics are the same:
+
+```go
+ctx, err := tracer.ContinueWithTraceContext(context.Background(), run.TraceId, opentelemetry.TraceContextCarrier{
+    TraceParent: run.TraceParent,
+    TraceState:  run.TraceState,
+})
+// ... handle the run under a span started from ctx ...
+carrier := tracer.InjectTraceContext(stageCtx)
+run.TraceParent, run.TraceState = carrier.TraceParent, carrier.TraceState
+```
+
 ### Complete Example
 
 Here's a complete example showing a typical use case:
