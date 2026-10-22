@@ -8,6 +8,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	otelTrace "go.opentelemetry.io/otel/trace"
@@ -890,4 +891,63 @@ func TestTracer_TraceContextCarrier(t *testing.T) {
 	if _, err := tracer.ContinueWithTraceContext(context.Background(), traceID, TraceContextCarrier{TraceParent: "garbage"}); err == nil {
 		t.Fatal("ContinueWithTraceContext(malformed) error = nil, want the degradation reported")
 	}
+}
+
+func resourceValue(res *resource.Resource, key string) (string, bool) {
+	for _, kv := range res.Attributes() {
+		if string(kv.Key) == key {
+			return kv.Value.Emit(), true
+		}
+	}
+	return "", false
+}
+
+// The service name from code and ENVIRONMENT are defaults; the standard
+// OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES override and extend them.
+func TestTracer_NewResource(t *testing.T) {
+	tracer, _ := NewTracer("hub-pipeline-monitor")
+
+	t.Run("defaults", func(t *testing.T) {
+		t.Setenv("ENVIRONMENT", "production")
+		t.Setenv("OTEL_SERVICE_NAME", "")
+		t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
+		res := tracer.newResource(context.Background(), "production")
+		for key, want := range map[string]string{
+			"service.name":                "hub-pipeline-monitor",
+			"environment":                 "production",
+			"deployment.environment.name": "production",
+		} {
+			if got, _ := resourceValue(res, key); got != want {
+				t.Errorf("%s = %q, want %q", key, got, want)
+			}
+		}
+		if _, ok := resourceValue(res, "telemetry.sdk.language"); !ok {
+			t.Error("telemetry.sdk.* attributes are missing")
+		}
+	})
+
+	t.Run("standard variables override", func(t *testing.T) {
+		t.Setenv("ENVIRONMENT", "")
+		t.Setenv("OTEL_SERVICE_NAME", "pipe-monitor")
+		t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "service.version=v1.3.24,deployment.environment.name=staging")
+		res := tracer.newResource(context.Background(), "default")
+		for key, want := range map[string]string{
+			"service.name":                "pipe-monitor",
+			"service.version":             "v1.3.24",
+			"deployment.environment.name": "staging",
+		} {
+			if got, _ := resourceValue(res, key); got != want {
+				t.Errorf("%s = %q, want %q", key, got, want)
+			}
+		}
+	})
+
+	t.Run("malformed attributes keep the rest", func(t *testing.T) {
+		t.Setenv("OTEL_SERVICE_NAME", "")
+		t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "not-a-pair")
+		res := tracer.newResource(context.Background(), "default")
+		if got, _ := resourceValue(res, "service.name"); got != "hub-pipeline-monitor" {
+			t.Errorf("service.name = %q, want the code default", got)
+		}
+	})
 }
