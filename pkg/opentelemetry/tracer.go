@@ -57,6 +57,14 @@ func (th *Tracer) Connect() error {
 		return nil
 	}
 
+	// A per-class sampling configuration (TRACE_SAMPLER_RATIOS) is checked
+	// before anything is installed, so a malformed value leaves tracing off and
+	// is reported instead of sampling at an unintended rate.
+	classSampler, err := classSamplerFromEnv()
+	if err != nil {
+		return err
+	}
+
 	// Determine if using insecure HTTP
 	isInsecure := strings.HasPrefix(otelEndpoint, "http://")
 
@@ -94,7 +102,7 @@ func (th *Tracer) Connect() error {
 	}
 
 	// Create the trace provider with the exporter
-	traceProvider := trace.NewTracerProvider(
+	providerOptions := []trace.TracerProviderOption{
 		trace.WithBatcher(exporter),
 		trace.WithResource(
 			resource.NewWithAttributes(
@@ -103,7 +111,12 @@ func (th *Tracer) Connect() error {
 				attribute.String("environment", environment),
 			),
 		),
-	)
+	}
+	// Without a class configuration the SDK reads OTEL_TRACES_SAMPLER itself.
+	if classSampler != nil {
+		providerOptions = append(providerOptions, trace.WithSampler(classSampler))
+	}
+	traceProvider := trace.NewTracerProvider(providerOptions...)
 
 	// Set the global tracer provider
 	otel.SetTracerProvider(traceProvider)
@@ -232,6 +245,20 @@ func (th *Tracer) InjectTraceContext(ctx context.Context) TraceContextCarrier {
 
 // CreateSpan creates a new span with the given parameters and returns the updated context and span.
 func (th *Tracer) CreateSpan(ctx context.Context, parameters map[string]string) (context.Context, otelTrace.Span) {
+	return th.createSpan(ctx, parameters)
+}
+
+// CreateClassSpan is CreateSpan for the root of one kind of work, tagged with
+// its sampling class (SamplingClassKey) when the span starts, so
+// TRACE_SAMPLER_RATIOS can trace that work at its own rate. A span that
+// continues a parent follows the parent's decision whatever its class.
+func (th *Tracer) CreateClassSpan(ctx context.Context, class string, parameters map[string]string) (context.Context, otelTrace.Span) {
+	return th.createSpan(ctx, parameters, otelTrace.WithAttributes(SamplingClassKey.String(class)))
+}
+
+// createSpan is called by the exported span constructors only: the span name
+// and source URL are taken from their caller, three frames up.
+func (th *Tracer) createSpan(ctx context.Context, parameters map[string]string, options ...otelTrace.SpanStartOption) (context.Context, otelTrace.Span) {
 	select {
 	case <-ctx.Done():
 		// Context is already done, return a no-op span
@@ -240,19 +267,19 @@ func (th *Tracer) CreateSpan(ctx context.Context, parameters map[string]string) 
 	}
 
 	var tracer otelTrace.Tracer
-	filePath, err := th.ReturnFilePath(2)
+	filePath, err := th.ReturnFilePath(3)
 	if err == nil {
 		tracer = otel.Tracer(filePath)
 	}
 
-	spanName, _ := th.GetCallerFunctionName(2)
-	ctx, span := tracer.Start(ctx, spanName)
+	spanName, _ := th.GetCallerFunctionName(3)
+	ctx, span := tracer.Start(ctx, spanName, options...)
 	environment := os.Getenv("ENVIRONMENT")
 	if environment == "" {
 		environment = "default"
 	}
 	span.SetAttributes(attribute.String("environment", environment))
-	if githubURL, err := th.ReturnGitHubEndpoint(2); err == nil {
+	if githubURL, err := th.ReturnGitHubEndpoint(3); err == nil {
 		span.SetAttributes(attribute.String("url", githubURL))
 	}
 
