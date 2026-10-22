@@ -77,7 +77,7 @@ export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
 
 ### 3. Sampling (optional)
 
-The standard `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` variables apply as usual. To trace one kind of work at its own rate, start its root span with `CreateClassSpan` and give each class a ratio:
+The standard `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` variables apply as usual. To trace one kind of work at its own rate, start its root span with `CreateClassSpan` and give each class its own ratio variable:
 
 ```go
 ctx, span := tracer.CreateClassSpan(ctx, "upload", map[string]string{"fileName": name})
@@ -86,12 +86,14 @@ defer span.End()
 
 ```bash
 # Trace ~10% of uploads and nothing else this service starts.
-export TRACE_SAMPLER_RATIOS="upload=0.1,default=0"
+export TRACE_SAMPLER_RATIO_UPLOAD="0.1"
+export TRACE_SAMPLER_RATIO_DEFAULT="0"
 ```
 
-- Each entry is `class=ratio` with a ratio between 0 and 1. `default` covers new traces without a listed class; when omitted it records everything (the SDK default).
+- `TRACE_SAMPLER_RATIO_<CLASS>` holds a ratio between 0 and 1 for the class named by its suffix (lowercased): `TRACE_SAMPLER_RATIO_UPLOAD` for `CreateClassSpan(ctx, "upload", ...)`.
+- `TRACE_SAMPLER_RATIO_DEFAULT` covers new traces without a listed class. Unset, it records everything (the SDK default).
 - Spans that continue a parent always follow the parent's decision, whatever their class.
-- When set, `TRACE_SAMPLER_RATIOS` takes precedence over `OTEL_TRACES_SAMPLER`. A malformed value makes `Connect` return an error and leaves tracing off.
+- When any `TRACE_SAMPLER_RATIO_*` variable is set, they take precedence over `OTEL_TRACES_SAMPLER`. A malformed value makes `Connect` return an error and leaves tracing off.
 
 ## Usage
 

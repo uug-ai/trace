@@ -16,17 +16,20 @@ import (
 // moment a sampler can read it.
 const SamplingClassKey = attribute.Key("sampling.class")
 
-// TraceSamplerRatiosEnv configures a sampling ratio per sampling class, so one
-// service can trace one kind of work (e.g. uploads) at its own rate and the
-// rest at another, or not at all:
+// TraceSamplerRatioEnvPrefix names one environment variable per sampling
+// class, holding that class's sampling ratio between 0 and 1, so one service
+// can trace one kind of work (e.g. uploads) at its own rate and the rest at
+// another, or not at all:
 //
-//	TRACE_SAMPLER_RATIOS="upload=0.1,default=0"
+//	TRACE_SAMPLER_RATIO_UPLOAD=0.1   # new traces started with CreateClassSpan(ctx, "upload", ...)
+//	TRACE_SAMPLER_RATIO_DEFAULT=0    # every other new trace
 //
-// Each entry is class=ratio with a ratio between 0 and 1; "default" applies to
-// new traces without a listed class and is 1 (record everything, the SDK
-// default) when omitted. Spans that continue a parent always follow the
-// parent's decision. When set, it takes precedence over OTEL_TRACES_SAMPLER.
-const TraceSamplerRatiosEnv = "TRACE_SAMPLER_RATIOS"
+// The class is the variable's suffix, lowercased. DEFAULT covers new traces
+// without a listed class and is 1 (record everything, the SDK default) when
+// unset. Spans that continue a parent always follow the parent's decision.
+// When any of these variables is set, they take precedence over
+// OTEL_TRACES_SAMPLER.
+const TraceSamplerRatioEnvPrefix = "TRACE_SAMPLER_RATIO_"
 
 const defaultSamplingClass = "default"
 
@@ -55,36 +58,38 @@ func (s classRatioSampler) Description() string {
 }
 
 // classSamplerFromEnv returns the parent-based class sampler configured by
-// TraceSamplerRatiosEnv, or nil when it is unset so the SDK's own
-// OTEL_TRACES_SAMPLER configuration applies.
+// the TraceSamplerRatioEnvPrefix variables, or nil when none is set so the
+// SDK's own OTEL_TRACES_SAMPLER configuration applies.
 func classSamplerFromEnv() (trace.Sampler, error) {
-	raw := strings.TrimSpace(os.Getenv(TraceSamplerRatiosEnv))
-	if raw == "" {
-		return nil, nil
-	}
-	root, err := parseClassRatios(raw)
-	if err != nil {
+	root, configured, err := parseClassRatios(os.Environ())
+	if err != nil || !configured {
 		return nil, err
 	}
 	return trace.ParentBased(root), nil
 }
 
-func parseClassRatios(raw string) (classRatioSampler, error) {
+// parseClassRatios reads the TraceSamplerRatioEnvPrefix variables from an
+// environment in os.Environ form. configured is false when none is set; empty
+// values count as unset.
+func parseClassRatios(environ []string) (_ classRatioSampler, configured bool, _ error) {
 	sampler := classRatioSampler{classes: map[string]trace.Sampler{}, fallback: trace.AlwaysSample()}
 	ratios := map[string]float64{}
-	for _, entry := range strings.Split(raw, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
+	for _, variable := range environ {
+		name, value, _ := strings.Cut(variable, "=")
+		if !strings.HasPrefix(name, TraceSamplerRatioEnvPrefix) {
 			continue
 		}
-		class, value, ok := strings.Cut(entry, "=")
-		class = strings.TrimSpace(class)
-		ratio, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
-		if !ok || class == "" || err != nil || ratio < 0 || ratio > 1 {
-			return classRatioSampler{}, fmt.Errorf("%s: invalid entry %q, want class=ratio with a ratio between 0 and 1", TraceSamplerRatiosEnv, entry)
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		class := strings.ToLower(strings.TrimPrefix(name, TraceSamplerRatioEnvPrefix))
+		ratio, err := strconv.ParseFloat(value, 64)
+		if class == "" || err != nil || ratio < 0 || ratio > 1 {
+			return classRatioSampler{}, false, fmt.Errorf("%s=%q: want a sampling class suffix and a ratio between 0 and 1", name, value)
 		}
 		if _, duplicate := ratios[class]; duplicate {
-			return classRatioSampler{}, fmt.Errorf("%s: class %q is listed twice", TraceSamplerRatiosEnv, class)
+			return classRatioSampler{}, false, fmt.Errorf("%s: sampling class %q is set twice", name, class)
 		}
 		ratios[class] = ratio
 		if class == defaultSamplingClass {
@@ -94,7 +99,7 @@ func parseClassRatios(raw string) (classRatioSampler, error) {
 		}
 	}
 	if len(ratios) == 0 {
-		return classRatioSampler{}, fmt.Errorf("%s: no class=ratio entries", TraceSamplerRatiosEnv)
+		return classRatioSampler{}, false, nil
 	}
 	names := make([]string, 0, len(ratios))
 	for class, ratio := range ratios {
@@ -102,5 +107,5 @@ func parseClassRatios(raw string) (classRatioSampler, error) {
 	}
 	sort.Strings(names)
 	sampler.description = "ClassRatioSampler{" + strings.Join(names, ",") + "}"
-	return sampler, nil
+	return sampler, true, nil
 }
