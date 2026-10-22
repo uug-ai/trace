@@ -13,31 +13,48 @@ import (
 )
 
 func TestParseClassRatios(t *testing.T) {
-	for raw, want := range map[string]string{
-		"upload=0.1,default=0":         "ClassRatioSampler{default=0,upload=0.1}",
-		" upload = 1 , heartbeat=0.01": "ClassRatioSampler{heartbeat=0.01,upload=1}",
-		"default=0":                    "ClassRatioSampler{default=0}",
+	for _, tt := range []struct {
+		environ []string
+		want    string
+	}{
+		{[]string{"TRACE_SAMPLER_RATIO_UPLOAD=0.1", "TRACE_SAMPLER_RATIO_DEFAULT=0", "PATH=/usr/bin"}, "ClassRatioSampler{default=0,upload=0.1}"},
+		{[]string{"TRACE_SAMPLER_RATIO_UPLOAD= 1 ", "TRACE_SAMPLER_RATIO_HEARTBEAT=0.01"}, "ClassRatioSampler{heartbeat=0.01,upload=1}"},
+		{[]string{"TRACE_SAMPLER_RATIO_DEFAULT=0"}, "ClassRatioSampler{default=0}"},
 	} {
-		sampler, err := parseClassRatios(raw)
-		if err != nil || sampler.Description() != want {
-			t.Errorf("parseClassRatios(%q) = %q, %v; want %q", raw, sampler.Description(), err, want)
+		sampler, configured, err := parseClassRatios(tt.environ)
+		if err != nil || !configured || sampler.Description() != tt.want {
+			t.Errorf("parseClassRatios(%v) = %q, %v, %v; want %q", tt.environ, sampler.Description(), configured, err, tt.want)
 		}
 	}
-	for _, raw := range []string{"upload", "upload=", "=0.1", "upload=1.5", "upload=-0.1", "upload=abc", "upload=0.1,upload=0.2", " , "} {
-		if _, err := parseClassRatios(raw); err == nil {
-			t.Errorf("parseClassRatios(%q) = nil error, want invalid", raw)
+	for _, environ := range [][]string{nil, {"PATH=/usr/bin"}, {"TRACE_SAMPLER_RATIO_UPLOAD="}, {"TRACE_SAMPLER_RATIO_UPLOAD= "}} {
+		if _, configured, err := parseClassRatios(environ); configured || err != nil {
+			t.Errorf("parseClassRatios(%v) = configured %v, %v; want unset", environ, configured, err)
+		}
+	}
+	for _, environ := range [][]string{
+		{"TRACE_SAMPLER_RATIO_UPLOAD=1.5"},
+		{"TRACE_SAMPLER_RATIO_UPLOAD=-0.1"},
+		{"TRACE_SAMPLER_RATIO_UPLOAD=abc"},
+		{"TRACE_SAMPLER_RATIO_=0.1"},
+		{"TRACE_SAMPLER_RATIO_UPLOAD=0.1", "TRACE_SAMPLER_RATIO_upload=0.2"},
+	} {
+		if _, _, err := parseClassRatios(environ); err == nil {
+			t.Errorf("parseClassRatios(%v) = nil error, want invalid", environ)
 		}
 	}
 }
 
-// recordWithClassRatios installs a provider with the class sampler configured
-// by ratios and returns the recorder of its ended spans.
-func recordWithClassRatios(t *testing.T, ratios string) *tracetest.SpanRecorder {
+// recordWithClassRatios sets the given TRACE_SAMPLER_RATIO_<CLASS> variables,
+// installs a provider with the class sampler they configure and returns the
+// recorder of its ended spans.
+func recordWithClassRatios(t *testing.T, ratios map[string]string) *tracetest.SpanRecorder {
 	t.Helper()
-	t.Setenv(TraceSamplerRatiosEnv, ratios)
+	for class, ratio := range ratios {
+		t.Setenv(TraceSamplerRatioEnvPrefix+class, ratio)
+	}
 	sampler, err := classSamplerFromEnv()
-	if err != nil {
-		t.Fatalf("classSamplerFromEnv() error = %v", err)
+	if err != nil || sampler == nil {
+		t.Fatalf("classSamplerFromEnv() = %v, %v", sampler, err)
 	}
 	recorder := tracetest.NewSpanRecorder()
 	provider := trace.NewTracerProvider(trace.WithSampler(sampler), trace.WithSpanProcessor(recorder))
@@ -52,7 +69,7 @@ func recordWithClassRatios(t *testing.T, ratios string) *tracetest.SpanRecorder 
 
 // Uploads are traced at their own ratio while everything else is off.
 func TestClassSamplerTracesOneClassOnly(t *testing.T) {
-	recorder := recordWithClassRatios(t, "upload=1,default=0")
+	recorder := recordWithClassRatios(t, map[string]string{"UPLOAD": "1", "DEFAULT": "0"})
 	tracer, _ := NewTracer("test-service")
 
 	_, upload := tracer.CreateClassSpan(context.Background(), "upload", nil)
@@ -80,8 +97,9 @@ func TestClassSamplerTracesOneClassOnly(t *testing.T) {
 	}
 }
 
+// Only UPLOAD set: uploads are off and everything else keeps the SDK default.
 func TestClassSamplerCanTurnAClassOff(t *testing.T) {
-	recorder := recordWithClassRatios(t, "upload=0")
+	recorder := recordWithClassRatios(t, map[string]string{"UPLOAD": "0"})
 	tracer, _ := NewTracer("test-service")
 
 	_, upload := tracer.CreateClassSpan(context.Background(), "upload", nil)
@@ -102,7 +120,7 @@ func TestClassSamplerCanTurnAClassOff(t *testing.T) {
 // A span that continues a parent follows the parent's decision whatever its
 // class, so a classed span inside an unsampled trace stays unsampled.
 func TestClassSamplerFollowsParent(t *testing.T) {
-	recordWithClassRatios(t, "upload=1,default=0")
+	recordWithClassRatios(t, map[string]string{"UPLOAD": "1", "DEFAULT": "0"})
 	tracer, _ := NewTracer("test-service")
 	traceID, _ := otelTrace.TraceIDFromHex("0123456789abcdef0123456789abcdef")
 	spanID, _ := otelTrace.SpanIDFromHex("a1b2c3d4e5f60718")
@@ -126,10 +144,10 @@ func TestClassSamplerFollowsParent(t *testing.T) {
 // sampling at an unintended rate.
 func TestConnectRejectsInvalidClassRatios(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
-	t.Setenv(TraceSamplerRatiosEnv, "upload=10")
+	t.Setenv("TRACE_SAMPLER_RATIO_UPLOAD", "10")
 	tracer, _ := NewTracer("test-service")
-	if err := tracer.Connect(); err == nil || !strings.Contains(err.Error(), TraceSamplerRatiosEnv) {
-		t.Fatalf("Connect() error = %v, want the %s error", err, TraceSamplerRatiosEnv)
+	if err := tracer.Connect(); err == nil || !strings.Contains(err.Error(), "TRACE_SAMPLER_RATIO_UPLOAD") {
+		t.Fatalf("Connect() error = %v, want the TRACE_SAMPLER_RATIO_UPLOAD error", err)
 	}
 	if tracer.traceProvider != nil {
 		t.Fatal("a tracer provider was installed despite the invalid sampler setting")

@@ -57,7 +57,7 @@ func (th *Tracer) Connect() error {
 		return nil
 	}
 
-	// A per-class sampling configuration (TRACE_SAMPLER_RATIOS) is checked
+	// A per-class sampling configuration (TRACE_SAMPLER_RATIO_<CLASS>) is checked
 	// before anything is installed, so a malformed value leaves tracing off and
 	// is reported instead of sampling at an unintended rate.
 	classSampler, err := classSamplerFromEnv()
@@ -250,7 +250,7 @@ func (th *Tracer) CreateSpan(ctx context.Context, parameters map[string]string) 
 
 // CreateClassSpan is CreateSpan for the root of one kind of work, tagged with
 // its sampling class (SamplingClassKey) when the span starts, so
-// TRACE_SAMPLER_RATIOS can trace that work at its own rate. A span that
+// TRACE_SAMPLER_RATIO_<CLASS> can trace that work at its own rate. A span that
 // continues a parent follows the parent's decision whatever its class.
 func (th *Tracer) CreateClassSpan(ctx context.Context, class string, parameters map[string]string) (context.Context, otelTrace.Span) {
 	return th.createSpan(ctx, parameters, otelTrace.WithAttributes(SamplingClassKey.String(class)))
