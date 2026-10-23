@@ -17,9 +17,9 @@ func TestParseClassRatios(t *testing.T) {
 		environ []string
 		want    string
 	}{
-		{[]string{"TRACE_SAMPLER_RATIO_UPLOAD=0.1", "TRACE_SAMPLER_RATIO_DEFAULT=0", "PATH=/usr/bin"}, "ClassRatioSampler{default=0,upload=0.1}"},
+		{[]string{"TRACE_SAMPLER_RATIO_UPLOAD=0.1", "TRACE_SAMPLER_RATIO_OTHER=0", "PATH=/usr/bin"}, "ClassRatioSampler{other=0,upload=0.1}"},
 		{[]string{"TRACE_SAMPLER_RATIO_UPLOAD= 1 ", "TRACE_SAMPLER_RATIO_HEARTBEAT=0.01"}, "ClassRatioSampler{heartbeat=0.01,upload=1}"},
-		{[]string{"TRACE_SAMPLER_RATIO_DEFAULT=0"}, "ClassRatioSampler{default=0}"},
+		{[]string{"TRACE_SAMPLER_RATIO_OTHER=0"}, "ClassRatioSampler{other=0}"},
 	} {
 		sampler, configured, err := parseClassRatios(tt.environ)
 		if err != nil || !configured || sampler.Description() != tt.want {
@@ -41,6 +41,16 @@ func TestParseClassRatios(t *testing.T) {
 		if _, _, err := parseClassRatios(environ); err == nil {
 			t.Errorf("parseClassRatios(%v) = nil error, want invalid", environ)
 		}
+	}
+}
+
+// The catch-all was called DEFAULT in v1.2.5. Accepting it as an ordinary
+// class would leave OTHER unset and record everything, so it is rejected with
+// a pointer to the new name.
+func TestParseClassRatiosRejectsRetiredDefault(t *testing.T) {
+	_, _, err := parseClassRatios([]string{"TRACE_SAMPLER_RATIO_UPLOAD=0.1", "TRACE_SAMPLER_RATIO_DEFAULT=0"})
+	if err == nil || !strings.Contains(err.Error(), "TRACE_SAMPLER_RATIO_OTHER") {
+		t.Fatalf("error = %v, want a pointer to TRACE_SAMPLER_RATIO_OTHER", err)
 	}
 }
 
@@ -69,7 +79,7 @@ func recordWithClassRatios(t *testing.T, ratios map[string]string) *tracetest.Sp
 
 // Uploads are traced at their own ratio while everything else is off.
 func TestClassSamplerTracesOneClassOnly(t *testing.T) {
-	recorder := recordWithClassRatios(t, map[string]string{"UPLOAD": "1", "DEFAULT": "0"})
+	recorder := recordWithClassRatios(t, map[string]string{"UPLOAD": "1", "OTHER": "0"})
 	tracer, _ := NewTracer("test-service")
 
 	_, upload := tracer.CreateClassSpan(context.Background(), "upload", nil)
@@ -79,7 +89,7 @@ func TestClassSamplerTracesOneClassOnly(t *testing.T) {
 		t.Error("an upload root was dropped at upload=1")
 	}
 	if other.IsRecording() || unlisted.IsRecording() {
-		t.Error("a root without a listed class was recorded at default=0")
+		t.Error("a root without a listed class was recorded at other=0")
 	}
 	upload.End()
 	other.End()
@@ -120,7 +130,7 @@ func TestClassSamplerCanTurnAClassOff(t *testing.T) {
 // A span that continues a parent follows the parent's decision whatever its
 // class, so a classed span inside an unsampled trace stays unsampled.
 func TestClassSamplerFollowsParent(t *testing.T) {
-	recordWithClassRatios(t, map[string]string{"UPLOAD": "1", "DEFAULT": "0"})
+	recordWithClassRatios(t, map[string]string{"UPLOAD": "1", "OTHER": "0"})
 	tracer, _ := NewTracer("test-service")
 	traceID, _ := otelTrace.TraceIDFromHex("0123456789abcdef0123456789abcdef")
 	spanID, _ := otelTrace.SpanIDFromHex("a1b2c3d4e5f60718")
