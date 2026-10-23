@@ -62,7 +62,7 @@ func recordWithClassRatios(t *testing.T, ratios map[string]string) *tracetest.Sp
 	for class, ratio := range ratios {
 		t.Setenv(TraceSamplerRatioEnvPrefix+class, ratio)
 	}
-	sampler, err := classSamplerFromEnv()
+	sampler, _, err := classSamplerFromEnv()
 	if err != nil || sampler == nil {
 		t.Fatalf("classSamplerFromEnv() = %v, %v", sampler, err)
 	}
@@ -161,6 +161,52 @@ func TestConnectRejectsInvalidClassRatios(t *testing.T) {
 	}
 	if tracer.traceProvider != nil {
 		t.Fatal("a tracer provider was installed despite the invalid sampler setting")
+	}
+}
+
+// Sampler reports the ratios Connect installed, so a service can log them.
+func TestConnectReportsSampler(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+	for _, tt := range []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"class ratios", map[string]string{"TRACE_SAMPLER_RATIO_UPLOAD": "0.1", "TRACE_SAMPLER_RATIO_OTHER": "0"}, "ParentBased(ClassRatioSampler{other=0,upload=0.1})"},
+		{"standard sampler", map[string]string{"OTEL_TRACES_SAMPLER": "parentbased_always_off"}, "OTEL_TRACES_SAMPLER=parentbased_always_off"},
+		{"standard sampler with arg", map[string]string{"OTEL_TRACES_SAMPLER": "parentbased_traceidratio", "OTEL_TRACES_SAMPLER_ARG": "0.1"}, "OTEL_TRACES_SAMPLER=parentbased_traceidratio OTEL_TRACES_SAMPLER_ARG=0.1"},
+		{"nothing set", nil, "OTEL_TRACES_SAMPLER unset (parentbased_always_on)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			previous := otel.GetTracerProvider()
+			tracer, _ := NewTracer("test-service")
+			if err := tracer.Connect(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = tracer.Shutdown(context.Background())
+				otel.SetTracerProvider(previous)
+			})
+			if got := tracer.Sampler(); got != tt.want {
+				t.Fatalf("Sampler() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// Without an endpoint tracing is off, and Sampler says so by being empty.
+func TestSamplerEmptyWhileTracingOff(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("TRACE_SAMPLER_RATIO_UPLOAD", "0.1")
+	tracer, _ := NewTracer("test-service")
+	if err := tracer.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	if got := tracer.Sampler(); got != "" {
+		t.Fatalf("Sampler() = %q, want empty", got)
 	}
 }
 

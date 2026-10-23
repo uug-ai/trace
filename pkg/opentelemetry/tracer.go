@@ -22,6 +22,7 @@ import (
 type Tracer struct {
 	ServiceName   string
 	traceProvider *trace.TracerProvider
+	sampler       string
 }
 
 func NewTracer(serviceName string) (*Tracer, error) {
@@ -60,7 +61,7 @@ func (th *Tracer) Connect() error {
 	// A per-class sampling configuration (TRACE_SAMPLER_RATIO_<CLASS>) is checked
 	// before anything is installed, so a malformed value leaves tracing off and
 	// is reported instead of sampling at an unintended rate.
-	classSampler, err := classSamplerFromEnv()
+	classSampler, samplerDescription, err := classSamplerFromEnv()
 	if err != nil {
 		return err
 	}
@@ -109,12 +110,15 @@ func (th *Tracer) Connect() error {
 	// Without a class configuration the SDK reads OTEL_TRACES_SAMPLER itself.
 	if classSampler != nil {
 		providerOptions = append(providerOptions, trace.WithSampler(classSampler))
+	} else {
+		samplerDescription = envSamplerDescription()
 	}
 	traceProvider := trace.NewTracerProvider(providerOptions...)
 
 	// Set the global tracer provider
 	otel.SetTracerProvider(traceProvider)
 	th.traceProvider = traceProvider
+	th.sampler = samplerDescription
 
 	return nil
 }
@@ -149,6 +153,29 @@ func (th *Tracer) newResource(ctx context.Context, environment string) *resource
 		return resource.NewSchemaless(attributes...)
 	}
 	return res
+}
+
+// Sampler describes the sampler Connect installed, e.g.
+// "ParentBased(ClassRatioSampler{other=0,upload=0.1})", for the service to log
+// at startup: it shows the ratios in effect, and a misspelt
+// TRACE_SAMPLER_RATIO_<CLASS> variable as a class no span uses. It is empty
+// while tracing is off.
+func (th *Tracer) Sampler() string {
+	return th.sampler
+}
+
+// envSamplerDescription describes the sampler the SDK reads from
+// OTEL_TRACES_SAMPLER when no class ratio is set.
+func envSamplerDescription() string {
+	name := os.Getenv("OTEL_TRACES_SAMPLER")
+	if name == "" {
+		return "OTEL_TRACES_SAMPLER unset (parentbased_always_on)"
+	}
+	description := "OTEL_TRACES_SAMPLER=" + name
+	if arg := os.Getenv("OTEL_TRACES_SAMPLER_ARG"); arg != "" {
+		description += " OTEL_TRACES_SAMPLER_ARG=" + arg
+	}
+	return description
 }
 
 // ContinueWithTrace continues a trace from the given trace ID in the context.
@@ -283,7 +310,7 @@ func (th *Tracer) CreateClassSpan(ctx context.Context, class string, parameters 
 }
 
 // createSpan is called by the exported span constructors only: the span name
-// and source URL are taken from their caller, three frames up.
+// and source URL are taken from their caller, two frames up.
 func (th *Tracer) createSpan(ctx context.Context, parameters map[string]string, options ...otelTrace.SpanStartOption) (context.Context, otelTrace.Span) {
 	select {
 	case <-ctx.Done():
@@ -292,21 +319,26 @@ func (th *Tracer) createSpan(ctx context.Context, parameters map[string]string, 
 	default:
 	}
 
-	var tracer otelTrace.Tracer
-	filePath, err := th.ReturnFilePath(3)
-	if err == nil {
-		tracer = otel.Tracer(filePath)
+	pc, file, line, callerFound := runtime.Caller(2)
+	tracer := otel.Tracer(th.ServiceName)
+	spanName := ""
+	if callerFound {
+		tracer = otel.Tracer(th.filePath(file, line))
+		spanName, _ = functionName(pc)
+	}
+	ctx, span := tracer.Start(ctx, spanName, options...)
+	// A span the sampler dropped records nothing, so its attributes are not built.
+	if !span.IsRecording() {
+		return ctx, span
 	}
 
-	spanName, _ := th.GetCallerFunctionName(3)
-	ctx, span := tracer.Start(ctx, spanName, options...)
 	environment := os.Getenv("ENVIRONMENT")
 	if environment == "" {
 		environment = "default"
 	}
 	span.SetAttributes(attribute.String("environment", environment))
-	if githubURL, err := th.ReturnGitHubEndpoint(3); err == nil {
-		span.SetAttributes(attribute.String("url", githubURL))
+	if callerFound {
+		span.SetAttributes(attribute.String("url", th.gitHubEndpoint(file, line)))
 	}
 
 	for key, value := range parameters {
@@ -320,15 +352,7 @@ func (th *Tracer) ReturnGitHubEndpoint(level int) (string, error) {
 	if !ok {
 		return "", errors.New("could not retrieve caller information")
 	}
-	projectPath := th.ServiceName + "/"
-	idx := strings.Index(file, projectPath)
-	if idx == -1 {
-		// fallback: just return the file name and line
-		return fmt.Sprintf("%s#L%d", file, line), nil
-	}
-	// Build the GitHub URL format
-	relPath := file[idx+len(projectPath):]
-	return fmt.Sprintf("github.com/uug-ai/"+th.ServiceName+"/blob/main/%s#L%d", relPath, line), nil
+	return th.gitHubEndpoint(file, line), nil
 }
 
 func (th *Tracer) ReturnFilePath(level int) (string, error) {
@@ -336,15 +360,36 @@ func (th *Tracer) ReturnFilePath(level int) (string, error) {
 	if !ok {
 		return "", errors.New("could not retrieve caller information")
 	}
+	return th.filePath(file, line), nil
+}
+
+// relativePath returns file relative to the service's directory, or false when
+// file is outside it.
+func (th *Tracer) relativePath(file string) (string, bool) {
 	projectPath := th.ServiceName + "/"
 	idx := strings.Index(file, projectPath)
 	if idx == -1 {
-		// fallback: just return the file name and line
-		return fmt.Sprintf("%s#L%d", file, line), nil
+		return "", false
 	}
-	// Build the GitHub URL format
-	relPath := file[idx+len(projectPath):]
-	return relPath, nil
+	return file[idx+len(projectPath):], true
+}
+
+func (th *Tracer) gitHubEndpoint(file string, line int) string {
+	relPath, ok := th.relativePath(file)
+	if !ok {
+		// fallback: just return the file name and line
+		return fmt.Sprintf("%s#L%d", file, line)
+	}
+	return fmt.Sprintf("github.com/uug-ai/%s/blob/main/%s#L%d", th.ServiceName, relPath, line)
+}
+
+func (th *Tracer) filePath(file string, line int) string {
+	relPath, ok := th.relativePath(file)
+	if !ok {
+		// fallback: just return the file name and line
+		return fmt.Sprintf("%s#L%d", file, line)
+	}
+	return relPath
 }
 
 func (th *Tracer) GetCallerFunctionName(level int) (string, error) {
@@ -352,23 +397,28 @@ func (th *Tracer) GetCallerFunctionName(level int) (string, error) {
 	if !ok {
 		return "", errors.New("could not retrieve caller information")
 	}
+	return functionName(pc)
+}
+
+// functionName returns the name of the function at pc without its package
+// path, e.g. controllers.GetMediaSequences.
+func functionName(pc uintptr) (string, error) {
 	fn := runtime.FuncForPC(pc)
 	if fn == nil {
 		return "", errors.New("could not retrieve function information")
 	}
 
-	functionName := fn.Name()
+	name := fn.Name()
 
 	// You'll have something like this: github.com/uug-ai/$PROJECT/controllers.GetMediaSequences
 	// strip of the package path but keep the controller name (controllers.GetMediaSequences)
 	// strip everthing before the last /.
 
-	parts := strings.Split(functionName, "/")
+	parts := strings.Split(name, "/")
 	if len(parts) == 0 {
 		return "", errors.New("function name split resulted in empty parts")
 	}
-	functionName = parts[len(parts)-1]
-	return functionName, nil
+	return parts[len(parts)-1], nil
 }
 
 func (th *Tracer) Audit(parameters map[string]string) {

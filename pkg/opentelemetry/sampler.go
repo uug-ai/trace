@@ -64,14 +64,14 @@ func (s classRatioSampler) Description() string {
 }
 
 // classSamplerFromEnv returns the parent-based class sampler configured by
-// the TraceSamplerRatioEnvPrefix variables, or nil when none is set so the
-// SDK's own OTEL_TRACES_SAMPLER configuration applies.
-func classSamplerFromEnv() (trace.Sampler, error) {
+// the TraceSamplerRatioEnvPrefix variables and its description, or nil when
+// none is set so the SDK's own OTEL_TRACES_SAMPLER configuration applies.
+func classSamplerFromEnv() (trace.Sampler, string, error) {
 	root, configured, err := parseClassRatios(os.Environ())
 	if err != nil || !configured {
-		return nil, err
+		return nil, "", err
 	}
-	return trace.ParentBased(root), nil
+	return trace.ParentBased(root), "ParentBased(" + root.Description() + ")", nil
 }
 
 // parseClassRatios reads the TraceSamplerRatioEnvPrefix variables from an
