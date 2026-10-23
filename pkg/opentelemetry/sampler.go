@@ -22,19 +22,25 @@ const SamplingClassKey = attribute.Key("sampling.class")
 // another, or not at all:
 //
 //	TRACE_SAMPLER_RATIO_UPLOAD=0.1   # new traces started with CreateClassSpan(ctx, "upload", ...)
-//	TRACE_SAMPLER_RATIO_DEFAULT=0    # every other new trace
+//	TRACE_SAMPLER_RATIO_OTHER=0      # every other new trace
 //
-// The class is the variable's suffix, lowercased. DEFAULT covers new traces
+// The class is the variable's suffix, lowercased. OTHER covers new traces
 // without a listed class and is 1 (record everything, the SDK default) when
 // unset. Spans that continue a parent always follow the parent's decision.
 // When any of these variables is set, they take precedence over
 // OTEL_TRACES_SAMPLER.
 const TraceSamplerRatioEnvPrefix = "TRACE_SAMPLER_RATIO_"
 
-const defaultSamplingClass = "default"
+// otherSamplingClass covers every new trace without a listed class.
+const otherSamplingClass = "other"
+
+// retiredSamplingClasses were names of the catch-all class in earlier
+// releases. Setting one is rejected: it would otherwise become an unused class
+// and leave the catch-all at its record-everything default.
+var retiredSamplingClasses = map[string]string{"default": otherSamplingClass}
 
 // classRatioSampler samples a new trace at the ratio of its root span's
-// sampling class (SamplingClassKey), or at the default ratio.
+// sampling class (SamplingClassKey), or at the ratio of the other class.
 type classRatioSampler struct {
 	classes     map[string]trace.Sampler
 	fallback    trace.Sampler
@@ -58,14 +64,14 @@ func (s classRatioSampler) Description() string {
 }
 
 // classSamplerFromEnv returns the parent-based class sampler configured by
-// the TraceSamplerRatioEnvPrefix variables, or nil when none is set so the
-// SDK's own OTEL_TRACES_SAMPLER configuration applies.
-func classSamplerFromEnv() (trace.Sampler, error) {
+// the TraceSamplerRatioEnvPrefix variables and its description, or nil when
+// none is set so the SDK's own OTEL_TRACES_SAMPLER configuration applies.
+func classSamplerFromEnv() (trace.Sampler, string, error) {
 	root, configured, err := parseClassRatios(os.Environ())
 	if err != nil || !configured {
-		return nil, err
+		return nil, "", err
 	}
-	return trace.ParentBased(root), nil
+	return trace.ParentBased(root), "ParentBased(" + root.Description() + ")", nil
 }
 
 // parseClassRatios reads the TraceSamplerRatioEnvPrefix variables from an
@@ -84,6 +90,9 @@ func parseClassRatios(environ []string) (_ classRatioSampler, configured bool, _
 			continue
 		}
 		class := strings.ToLower(strings.TrimPrefix(name, TraceSamplerRatioEnvPrefix))
+		if replacement, retired := retiredSamplingClasses[class]; retired {
+			return classRatioSampler{}, false, fmt.Errorf("%s is no longer supported: use %s%s", name, TraceSamplerRatioEnvPrefix, strings.ToUpper(replacement))
+		}
 		ratio, err := strconv.ParseFloat(value, 64)
 		if class == "" || err != nil || ratio < 0 || ratio > 1 {
 			return classRatioSampler{}, false, fmt.Errorf("%s=%q: want a sampling class suffix and a ratio between 0 and 1", name, value)
@@ -92,7 +101,7 @@ func parseClassRatios(environ []string) (_ classRatioSampler, configured bool, _
 			return classRatioSampler{}, false, fmt.Errorf("%s: sampling class %q is set twice", name, class)
 		}
 		ratios[class] = ratio
-		if class == defaultSamplingClass {
+		if class == otherSamplingClass {
 			sampler.fallback = trace.TraceIDRatioBased(ratio)
 		} else {
 			sampler.classes[class] = trace.TraceIDRatioBased(ratio)

@@ -17,9 +17,9 @@ func TestParseClassRatios(t *testing.T) {
 		environ []string
 		want    string
 	}{
-		{[]string{"TRACE_SAMPLER_RATIO_UPLOAD=0.1", "TRACE_SAMPLER_RATIO_DEFAULT=0", "PATH=/usr/bin"}, "ClassRatioSampler{default=0,upload=0.1}"},
+		{[]string{"TRACE_SAMPLER_RATIO_UPLOAD=0.1", "TRACE_SAMPLER_RATIO_OTHER=0", "PATH=/usr/bin"}, "ClassRatioSampler{other=0,upload=0.1}"},
 		{[]string{"TRACE_SAMPLER_RATIO_UPLOAD= 1 ", "TRACE_SAMPLER_RATIO_HEARTBEAT=0.01"}, "ClassRatioSampler{heartbeat=0.01,upload=1}"},
-		{[]string{"TRACE_SAMPLER_RATIO_DEFAULT=0"}, "ClassRatioSampler{default=0}"},
+		{[]string{"TRACE_SAMPLER_RATIO_OTHER=0"}, "ClassRatioSampler{other=0}"},
 	} {
 		sampler, configured, err := parseClassRatios(tt.environ)
 		if err != nil || !configured || sampler.Description() != tt.want {
@@ -44,6 +44,16 @@ func TestParseClassRatios(t *testing.T) {
 	}
 }
 
+// The catch-all was called DEFAULT in v1.2.5. Accepting it as an ordinary
+// class would leave OTHER unset and record everything, so it is rejected with
+// a pointer to the new name.
+func TestParseClassRatiosRejectsRetiredDefault(t *testing.T) {
+	_, _, err := parseClassRatios([]string{"TRACE_SAMPLER_RATIO_UPLOAD=0.1", "TRACE_SAMPLER_RATIO_DEFAULT=0"})
+	if err == nil || !strings.Contains(err.Error(), "TRACE_SAMPLER_RATIO_OTHER") {
+		t.Fatalf("error = %v, want a pointer to TRACE_SAMPLER_RATIO_OTHER", err)
+	}
+}
+
 // recordWithClassRatios sets the given TRACE_SAMPLER_RATIO_<CLASS> variables,
 // installs a provider with the class sampler they configure and returns the
 // recorder of its ended spans.
@@ -52,7 +62,7 @@ func recordWithClassRatios(t *testing.T, ratios map[string]string) *tracetest.Sp
 	for class, ratio := range ratios {
 		t.Setenv(TraceSamplerRatioEnvPrefix+class, ratio)
 	}
-	sampler, err := classSamplerFromEnv()
+	sampler, _, err := classSamplerFromEnv()
 	if err != nil || sampler == nil {
 		t.Fatalf("classSamplerFromEnv() = %v, %v", sampler, err)
 	}
@@ -69,7 +79,7 @@ func recordWithClassRatios(t *testing.T, ratios map[string]string) *tracetest.Sp
 
 // Uploads are traced at their own ratio while everything else is off.
 func TestClassSamplerTracesOneClassOnly(t *testing.T) {
-	recorder := recordWithClassRatios(t, map[string]string{"UPLOAD": "1", "DEFAULT": "0"})
+	recorder := recordWithClassRatios(t, map[string]string{"UPLOAD": "1", "OTHER": "0"})
 	tracer, _ := NewTracer("test-service")
 
 	_, upload := tracer.CreateClassSpan(context.Background(), "upload", nil)
@@ -79,7 +89,7 @@ func TestClassSamplerTracesOneClassOnly(t *testing.T) {
 		t.Error("an upload root was dropped at upload=1")
 	}
 	if other.IsRecording() || unlisted.IsRecording() {
-		t.Error("a root without a listed class was recorded at default=0")
+		t.Error("a root without a listed class was recorded at other=0")
 	}
 	upload.End()
 	other.End()
@@ -120,7 +130,7 @@ func TestClassSamplerCanTurnAClassOff(t *testing.T) {
 // A span that continues a parent follows the parent's decision whatever its
 // class, so a classed span inside an unsampled trace stays unsampled.
 func TestClassSamplerFollowsParent(t *testing.T) {
-	recordWithClassRatios(t, map[string]string{"UPLOAD": "1", "DEFAULT": "0"})
+	recordWithClassRatios(t, map[string]string{"UPLOAD": "1", "OTHER": "0"})
 	tracer, _ := NewTracer("test-service")
 	traceID, _ := otelTrace.TraceIDFromHex("0123456789abcdef0123456789abcdef")
 	spanID, _ := otelTrace.SpanIDFromHex("a1b2c3d4e5f60718")
@@ -151,6 +161,52 @@ func TestConnectRejectsInvalidClassRatios(t *testing.T) {
 	}
 	if tracer.traceProvider != nil {
 		t.Fatal("a tracer provider was installed despite the invalid sampler setting")
+	}
+}
+
+// Sampler reports the ratios Connect installed, so a service can log them.
+func TestConnectReportsSampler(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+	for _, tt := range []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"class ratios", map[string]string{"TRACE_SAMPLER_RATIO_UPLOAD": "0.1", "TRACE_SAMPLER_RATIO_OTHER": "0"}, "ParentBased(ClassRatioSampler{other=0,upload=0.1})"},
+		{"standard sampler", map[string]string{"OTEL_TRACES_SAMPLER": "parentbased_always_off"}, "OTEL_TRACES_SAMPLER=parentbased_always_off"},
+		{"standard sampler with arg", map[string]string{"OTEL_TRACES_SAMPLER": "parentbased_traceidratio", "OTEL_TRACES_SAMPLER_ARG": "0.1"}, "OTEL_TRACES_SAMPLER=parentbased_traceidratio OTEL_TRACES_SAMPLER_ARG=0.1"},
+		{"nothing set", nil, "OTEL_TRACES_SAMPLER unset (parentbased_always_on)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			previous := otel.GetTracerProvider()
+			tracer, _ := NewTracer("test-service")
+			if err := tracer.Connect(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = tracer.Shutdown(context.Background())
+				otel.SetTracerProvider(previous)
+			})
+			if got := tracer.Sampler(); got != tt.want {
+				t.Fatalf("Sampler() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// Without an endpoint tracing is off, and Sampler says so by being empty.
+func TestSamplerEmptyWhileTracingOff(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("TRACE_SAMPLER_RATIO_UPLOAD", "0.1")
+	tracer, _ := NewTracer("test-service")
+	if err := tracer.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	if got := tracer.Sampler(); got != "" {
+		t.Fatalf("Sampler() = %q, want empty", got)
 	}
 }
 

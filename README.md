@@ -93,11 +93,11 @@ defer span.End()
 ```bash
 # Trace ~10% of uploads and nothing else this service starts.
 export TRACE_SAMPLER_RATIO_UPLOAD="0.1"
-export TRACE_SAMPLER_RATIO_DEFAULT="0"
+export TRACE_SAMPLER_RATIO_OTHER="0"
 ```
 
 - `TRACE_SAMPLER_RATIO_<CLASS>` holds a ratio between 0 and 1 for the class named by its suffix (lowercased): `TRACE_SAMPLER_RATIO_UPLOAD` for `CreateClassSpan(ctx, "upload", ...)`.
-- `TRACE_SAMPLER_RATIO_DEFAULT` covers new traces without a listed class. Unset, it records everything (the SDK default).
+- `TRACE_SAMPLER_RATIO_OTHER` covers new traces without a listed class. Unset, it records everything (the SDK default). (`TRACE_SAMPLER_RATIO_DEFAULT` from v1.2.5 is rejected; use `OTHER`.)
 - Spans that continue a parent always follow the parent's decision, whatever their class.
 - When any `TRACE_SAMPLER_RATIO_*` variable is set, they take precedence over `OTEL_TRACES_SAMPLER`. A malformed value makes `Connect` return an error and leaves tracing off.
 

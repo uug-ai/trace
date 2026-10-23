@@ -616,6 +616,42 @@ func TestIntegration_HeadSamplingFollowsTraceData(t *testing.T) {
 	}
 }
 
+// Both span constructors name the span after their caller and link to the
+// caller's line.
+func TestTracer_CreateSpanNamesCaller(t *testing.T) {
+	spanRecorder := tracetest.NewSpanRecorder()
+	traceProvider := trace.NewTracerProvider(trace.WithSpanProcessor(spanRecorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(traceProvider)
+	t.Cleanup(func() {
+		_ = traceProvider.Shutdown(context.Background())
+		otel.SetTracerProvider(previous)
+	})
+
+	tracer, _ := NewTracer("trace")
+	_, span := tracer.CreateSpan(context.Background(), nil)
+	span.End()
+	_, classSpan := tracer.CreateClassSpan(context.Background(), "upload", nil)
+	classSpan.End()
+
+	spans := spanRecorder.Ended()
+	if len(spans) != 2 {
+		t.Fatalf("ended spans = %d, want 2", len(spans))
+	}
+	for _, recorded := range spans {
+		if !strings.HasSuffix(recorded.Name(), ".TestTracer_CreateSpanNamesCaller") {
+			t.Errorf("span name = %q, want the calling test", recorded.Name())
+		}
+		if got := recorded.InstrumentationScope().Name; !strings.Contains(got, "tracer_test.go") {
+			t.Errorf("tracer name = %q, want the calling file", got)
+		}
+		url, _ := spanAttribute(recorded, "url")
+		if !strings.Contains(url.AsString(), "tracer_test.go#L") {
+			t.Errorf("url = %q, want the calling line", url.AsString())
+		}
+	}
+}
+
 func TestTracer_GetCallerFunctionName(t *testing.T) {
 	tracer, err := NewTracer("tracer")
 	if err != nil {
