@@ -61,8 +61,14 @@ Set the following environment variables:
 # Required: OTLP endpoint for sending traces
 export OTEL_EXPORTER_OTLP_ENDPOINT="localhost:4318"
 
-# Optional: Environment identifier
+# Optional: Environment identifier (deployment.environment.name)
 export ENVIRONMENT="production"
+
+# Optional: standard OpenTelemetry resource settings. They override the
+# service name passed to NewTracer and ENVIRONMENT, and add attributes such as
+# the deployed version.
+export OTEL_SERVICE_NAME="hub-pipeline-monitor"
+export OTEL_RESOURCE_ATTRIBUTES="service.version=v1.3.24"
 ```
 
 For HTTPS endpoints, use the full URL:

@@ -104,13 +104,7 @@ func (th *Tracer) Connect() error {
 	// Create the trace provider with the exporter
 	providerOptions := []trace.TracerProviderOption{
 		trace.WithBatcher(exporter),
-		trace.WithResource(
-			resource.NewWithAttributes(
-				semconv.SchemaURL,
-				semconv.ServiceNameKey.String(th.ServiceName),
-				attribute.String("environment", environment),
-			),
-		),
+		trace.WithResource(th.newResource(context.Background(), environment)),
 	}
 	// Without a class configuration the SDK reads OTEL_TRACES_SAMPLER itself.
 	if classSampler != nil {
@@ -123,6 +117,38 @@ func (th *Tracer) Connect() error {
 	th.traceProvider = traceProvider
 
 	return nil
+}
+
+// newResource describes this service to the tracing backend. The service name
+// passed to NewTracer and the ENVIRONMENT variable are the defaults; the
+// standard OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES variables override
+// them, so a deployment can add attributes such as service.version without a
+// code change. The SDK's own telemetry.sdk.* attributes are included. A
+// malformed OTEL_RESOURCE_ATTRIBUTES is reported to the OpenTelemetry error
+// handler and the rest of the resource is kept, as it does not change what is
+// traced.
+func (th *Tracer) newResource(ctx context.Context, environment string) *resource.Resource {
+	attributes := []attribute.KeyValue{
+		semconv.ServiceNameKey.String(th.ServiceName),
+		// Kept for existing dashboards; deployment.environment.name is the
+		// semantic-convention attribute.
+		attribute.String("environment", environment),
+	}
+	if configured := os.Getenv("ENVIRONMENT"); configured != "" {
+		attributes = append(attributes, attribute.String("deployment.environment.name", configured))
+	}
+	res, err := resource.New(ctx,
+		resource.WithTelemetrySDK(),
+		resource.WithAttributes(attributes...),
+		resource.WithFromEnv(),
+	)
+	if err != nil {
+		otel.Handle(err)
+	}
+	if res == nil {
+		return resource.NewSchemaless(attributes...)
+	}
+	return res
 }
 
 // ContinueWithTrace continues a trace from the given trace ID in the context.
